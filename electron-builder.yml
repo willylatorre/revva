@@ -7,11 +7,16 @@ files:
   - out/**
   - CHANGELOG.md
   - '!node_modules/**/{*.md,LICENSE,license,*.map}'
+  # better-sqlite3 v13 loads a platform prebuild (N-API); its compile inputs
+  # are dead weight. The prebuilds themselves are filtered per platform below.
+  - '!node_modules/better-sqlite3/{src,deps,build,tools}/**'
 asarUnpack:
   - node_modules/better-sqlite3/**
 mac:
   icon: build/icon.icns
   category: public.app-category.developer-tools
+  files:
+    - '!node_modules/better-sqlite3/prebuilds/{win*,linux*}.node'
   target:
     - target: dmg
       arch: [arm64]
@@ -19,6 +24,8 @@ mac:
       arch: [arm64]
 win:
   # icon.ico is generated from build/icon.png (1024px) by electron-builder.
+  files:
+    - '!node_modules/better-sqlite3/prebuilds/{darwin*,linux*}.node'
   target:
     - target: nsis
       arch: [x64]
