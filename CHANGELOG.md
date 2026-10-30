@@ -7,6 +7,8 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
+- **Windows hardening for agent work** — an npm-installed `opencode` (a `.cmd` shim, not an `.exe`) no longer dead-ends with "OpenCode was not found": Revva now resolves it on PATH and launches it through `cmd.exe`, so the service starts where the bare spawn is refused. The Ship checklist gains a **Long paths** warning on Windows (`core.longpaths` off ⇒ git can refuse deep checkouts mid-ship) — shown, never blocking. Inbox notifications now work in Windows dev mode too (AppUserModelID set), stopping a console flash no longer happens when a script is stopped, and keep-awake copy says "machine" instead of "Mac".
+
 - (nothing yet)
 
 ## [1.2.1] - 2026-10-30

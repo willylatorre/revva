@@ -8,10 +8,42 @@
 import { Service, type Endpoint } from '@opencode/client/service'
 import { OpenCode } from '@opencode/client'
 import { app } from 'electron'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import type { ServiceStatus } from '@shared/types'
 import { pushToWindows } from '../push'
 
+const execFileAsync = promisify(execFile)
+
 type Listener = (status: ServiceStatus) => void
+
+let windowsCommand: Promise<string[] | undefined> | undefined
+
+/**
+ * npm-installed `opencode` on Windows is an `opencode.cmd` shim, and Node refuses
+ * to spawn `.cmd`/`.bat` without a shell (CVE-2024-27980) — the bare
+ * `spawn('opencode', …)` in @opencode/client then dies with EINVAL even though
+ * opencode IS installed. Resolve `opencode` on PATH once: a native `.exe` spawns
+ * directly; a `.cmd`/`.bat` shim is wrapped in cmd.exe. Nothing found keeps the
+ * default behavior so the friendly "install it" hint still surfaces.
+ */
+function windowsServiceCommand(): Promise<string[] | undefined> {
+  if (process.platform !== 'win32') return Promise.resolve(undefined)
+  windowsCommand ??= (async () => {
+    try {
+      const { stdout } = await execFileAsync('where.exe', ['opencode'], { windowsHide: true, timeout: 10_000 })
+      const found = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+      const exe = found.find((p) => /\.exe$/i.test(p))
+      if (exe) return [exe, 'serve', '--service']
+      const shim = found.find((p) => /\.(cmd|bat)$/i.test(p))
+      if (shim) return ['cmd.exe', '/d', '/s', '/c', `"${shim}" serve --service`]
+    } catch {
+      // not on PATH — fall through to the client's default spawn
+    }
+    return undefined
+  })()
+  return windowsCommand
+}
 
 export class OpenCodeService {
   private endpoint: Endpoint | undefined
@@ -45,7 +77,9 @@ export class OpenCodeService {
   async ensure(): Promise<ServiceStatus> {
     this.setStatus({ state: 'connecting', lastCheckedAt: Date.now(), message: undefined })
     try {
+      const command = await windowsServiceCommand()
       const endpoint = await Service.ensure({
+        ...(command ? { command } : {}),
         onStart: (reason) => {
           this.setStatus({
             state: 'connecting',

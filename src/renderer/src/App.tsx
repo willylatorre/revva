@@ -713,7 +713,7 @@ function KeepAwakeToggle(): React.JSX.Element {
         </Button>
       </TooltipTrigger>
       <TooltipContent side="top">
-        {enabled ? 'Keeping this Mac awake — click to allow sleep' : 'Prevent sleep while agents run'}
+        {enabled ? 'Keeping this machine awake — click to allow sleep' : 'Prevent sleep while agents run'}
       </TooltipContent>
     </Tooltip>
   )

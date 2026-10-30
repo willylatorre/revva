@@ -88,6 +88,17 @@ class ShipManager {
         : { name: 'GitHub remote', ok: false, detail: `origin is not a GitHub repo (${remote.out || 'no remote'})` }
     )
 
+    // Windows: without core.longpaths, git refuses paths past 260 chars —
+    // a deep repo can fail checkout/merge mid-ship with a cryptic error.
+    if (process.platform === 'win32') {
+      const longpaths = await this.probe('git', ['-C', work.worktree_dir, 'config', '--bool', '--get', 'core.longpaths'])
+      checks.push(
+        longpaths.ok && longpaths.out.trim() === 'true'
+          ? { name: 'Long paths', ok: true, detail: 'core.longpaths is on' }
+          : { name: 'Long paths', ok: false, fatal: false, detail: 'git may refuse deep paths (MAX_PATH) — run: git config --global core.longpaths true' }
+      )
+    }
+
     const status = await this.probe('git', ['-C', work.worktree_dir, 'status', '--porcelain'])
     const dirty = status.ok && status.out.trim().length > 0
     checks.push(

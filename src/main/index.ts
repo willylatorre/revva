@@ -54,6 +54,10 @@ function createWindow(): void {
 
 app.whenReady().then(() => {
   app.setAboutPanelOptions({ applicationName: 'Revva' })
+  // Windows routes OS notifications by AppUserModelID; without this they are
+  // silently dropped in dev, and a dev machine disagrees with the installer
+  // (electron-builder stamps the shortcut's AUMID with the same appId).
+  if (process.platform === 'win32') app.setAppUserModelId('dev.revva.app')
   // Electron's development executable otherwise shows its default Dock icon.
   if (process.platform === 'darwin' && !app.isPackaged) {
     app.dock?.setIcon(join(app.getAppPath(), 'build/icon.png'))

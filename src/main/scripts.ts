@@ -122,7 +122,7 @@ class ScriptManager {
     if (pid === undefined) return
     if (process.platform === 'win32') {
       // No process groups; kill the whole child tree the shell spawned.
-      spawn('taskkill', ['/T', '/F', '/PID', String(pid)], { stdio: 'ignore' })
+      spawn('taskkill', ['/T', '/F', '/PID', String(pid)], { stdio: 'ignore', windowsHide: true })
       return
     }
     // zsh -ic spawns children; kill the group.

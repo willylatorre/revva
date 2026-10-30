@@ -73,7 +73,7 @@ const FEATURES: Array<{ title: string; body: string }> = [
   },
   {
     title: 'Made for long runs',
-    body: 'Keep-awake holds off Mac sleep while agents work; conversation switching never loses live output; abandoned work can be removed safely, merged branches included.'
+    body: 'Keep-awake holds off machine sleep while agents work; conversation switching never loses live output; abandoned work can be removed safely, merged branches included.'
   }
 ]
 
