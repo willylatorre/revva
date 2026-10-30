@@ -73,6 +73,7 @@ export const IPC = {
   workMessages: 'revva:work:messages',
   workReviews: 'revva:work:reviews',
   workReviewStart: 'revva:work:review-start',
+  workChatReview: 'revva:work:chat-review',
   workReviewRetry: 'revva:work:review-retry',
   workReviewStop: 'revva:work:review-stop',
   workShipCheck: 'revva:work:ship-check',

@@ -30,9 +30,11 @@ import { checkoutBranch, listRepoBranches, probeCheckout } from '../branches'
 import { renderPrompt, DEFAULT_START_PROMPT, BUILD_COMPLETION_INSTRUCTIONS } from '@shared/prompts'
 import {
   IPC,
+  type ChatReviewResult,
   type ConversationCheckoutResult,
   type PromptImage,
   type PromptRefs,
+  type StartChatReviewInput,
   type StartWorkInput,
   type WorkAbandonPreflight,
   type WorkState,
@@ -214,6 +216,71 @@ class WorkManager {
     sessionIndex.register(sessionId, 'work')
     this.emit(id, state)
     return this.toSummary(getDb().prepare('SELECT * FROM work WHERE id = ?').get(id) as WorkRow)
+  }
+
+  /**
+   * One-click full review cycle from a conversation: attach the review utilities if
+   * the chat has no run yet, optionally commit what the conversation left uncommitted
+   * (the reviewers only ever read commits), then start a fresh reviewer round whose
+   * findings fan in to the fixer and re-review until the gates pass.
+   *
+   * Nothing here rewrites history: the commit is a plain `add -A` + `commit` on the
+   * branch already checked out, and a dirty tree without a commit message is reported
+   * back as `needs-commit` with the files, changing nothing. Shipping stays a separate,
+   * explicit action — this never pushes or opens a PR.
+   */
+  async startChatReview(input: StartChatReviewInput): Promise<ChatReviewResult> {
+    const { sessionId, directory, commitMessage } = input
+    let work: WorkSummary
+    try {
+      work = await this.conversationContext(sessionId)
+    } catch (err) {
+      // An ordinary chat has no Jira/PR link, so its own folder is the review scope.
+      if (!directory) throw err
+      work = await this.conversationContext(sessionId, directory)
+    }
+    if (work.state === 'REVIEW' || work.state === 'FIXING') throw new Error('A review cycle is already running for this conversation. Stop it before starting another.')
+    if (work.state === 'SHIPPED') throw new Error('This run already shipped. Send a follow-up to make new changes before reviewing again.')
+    if (work.state === 'ABANDONED') throw new Error('This run was abandoned.')
+    if (reviewManager.isBusyReviewing(work.id)) throw new Error('Stop the current review before starting another cycle.')
+    if (shipManager.isShipping(work.id)) throw new Error('Shipping is in progress; wait for it to finish before reviewing.')
+    if (this.hasFollowUps(work.id)) throw new Error('Send or remove the saved follow-ups before starting review.')
+    if (this.isPrompting(work.id)) throw new Error('A message is still being delivered; try again in a moment.')
+    const active = await openCodeService.api.session.active().catch(() => undefined)
+    if (!active) throw new Error('The OpenCode service could not be consulted about running sessions — nothing was started.')
+    if (sessionId in active) throw new Error('This conversation is answering right now. Stop the response or wait for it to finish before reviewing.')
+
+    const status = await exec('git', ['-C', work.worktreeDir, 'status', '--porcelain']).catch(() => undefined)
+    if (!status) throw new Error(`Revva could not read the checkout at ${work.worktreeDir}. Re-select its review folder in Details.`)
+    const files = status.stdout.split('\n').filter(Boolean)
+    if (files.length && !commitMessage) {
+      return { status: 'needs-commit', work, files: files.slice(0, 40) }
+    }
+    let note: string | undefined
+    if (files.length && commitMessage) {
+      const attached = (await exec('git', ['-C', work.worktreeDir, 'branch', '--show-current'])).stdout.trim()
+      if (!attached) throw new Error('This checkout is on detached HEAD. Check out a branch in Details before reviewing — nothing was committed.')
+      const message = work.ticketKey && !commitMessage.includes(work.ticketKey)
+        ? `${commitMessage.trim()}\n\n${work.ticketKey}`
+        : commitMessage.trim()
+      // Plain staging + commit on the branch that is already checked out; git's own
+      // hooks and refusal are the last word, and neither can discard anything.
+      await exec('git', ['-C', work.worktreeDir, 'add', '-A'])
+      try {
+        await exec('git', ['-C', work.worktreeDir, 'commit', '-m', message])
+      } catch (err) {
+        const detail = describeError(err)
+        throw new Error(`Nothing was reviewed: the commit failed — ${detail}`)
+      }
+      note = `Committed ${files.length} change(s) on ${attached}`
+      getDb().prepare('INSERT INTO auto_decision(work_id, round, kind, detail, created_at) VALUES(?,?,?,?,?)')
+        .run(work.id, null, 'chat-review-commit', `committed ${files.length} file change(s) before review`, Date.now())
+    }
+
+    const round = reviewManager.latestRound(work.id) + 1
+    await reviewManager.startRound(work.id, round, true)
+    const started = this.workBySession(sessionId)
+    return { status: 'started', work: started ? this.toSummary(started) : work, files: [], note }
   }
 
   /**

@@ -7,6 +7,10 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
+- **Direct follow-ups to child agents** — the agent output dialog now carries its own message composer, so a running or finished builder/reviewer child takes a follow-up directly instead of only through the coordinator. While the agent runs, the message queues behind its current turn; review still fences delivery while a review is in progress.
+
+- **Full review from any chat, in one click** — every conversation header now carries a **Full review** button that runs the whole cycle the ticket pipeline runs: reviewers fan out over the committed diff, their findings go to a single fixer, and re-review rounds repeat until the gates pass (bounded as before). In an ordinary chat the first press attaches the review utilities to the conversation's own checkout, then the Workflow control takes over with the live agent cards. Because reviewers only read commits, a checkout with uncommitted changes offers a commit step first — the changed files and a message field, committed with a plain `add`/`commit` on the current branch; declining changes nothing. Shipping stays separate: the button never pushes or opens a PR.
+
 - **Visible agent requests** — pending conversation requests remain discoverable even when agent activity fills the panel; long agent titles fit the output inspector. Symlinked non-Git folders now share the same collaboration scope.
 
 - **Safer review and agent mentions** — review blocks if the implementation conversation moved to another checkout; first-message references keep their offsets. Failed agent discovery no longer silently drops mentions, and activity panels share space so the composer stays reachable.

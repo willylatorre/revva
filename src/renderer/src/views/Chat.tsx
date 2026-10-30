@@ -27,6 +27,7 @@ import { ConversationEnvironment, ConversationActions, ConversationDetails } fro
 import { WorkAgentActivity } from './WorkAgentActivity'
 import { WorkFollowUpQueue } from './WorkFollowUpQueue'
 import { ChildAgentActivity } from './ChildAgentActivity'
+import { ChatReviewButton } from './ChatReviewButton'
 
 const IMAGE_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp'
 const MAX_IMAGES = 8
@@ -1310,13 +1311,6 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
     retry: false,
     staleTime: Infinity
   })
-  const enableReview = useMutation({
-    mutationFn: () => {
-      if (!chat?.directory) throw new Error('Conversation folder unavailable. Reopen this chat and try again.')
-      return window.revva.work.conversationContext(sessionId, chat.directory)
-    },
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['works'] })
-  })
   const ticketKeys = [...new Set([
     ...(works.data ?? []).filter((work) => !!work.ticketKey && work.state !== 'ABANDONED').map((work) => work.ticketKey),
     ...(chats.data ?? []).flatMap((item) => item.ticketKey ? [item.ticketKey] : [])
@@ -1359,7 +1353,6 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
         {attachment.isError && <Button size="sm" variant="outline" onClick={() => void attachment.refetch()}>Retry</Button>}
       </p>}
       {tag.error && <p role="alert" className="shrink-0 border-b px-4 py-2 text-sm text-destructive">{tag.error instanceof Error ? tag.error.message : String(tag.error)}</p>}
-      {enableReview.error && <p role="alert" className="shrink-0 border-b px-4 py-2 text-sm text-destructive">{enableReview.error instanceof Error ? enableReview.error.message : String(enableReview.error)}</p>}
     <TranscriptView
       key={sessionId}
       sessionId={sessionId}
@@ -1404,7 +1397,7 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
             </DropdownMenu>
           )}
           {chatWork && <ConversationActions work={chatWork} />}
-          {chat && !chatWork && !chat.ticketKey && !chat.prUrl && <Button variant="outline" size="sm" className="shrink-0" disabled={enableReview.isPending} onClick={() => enableReview.mutate()}>{enableReview.isPending ? 'Enabling review controls…' : 'Enable review controls'}</Button>}
+          {chat && !chatWork && <ChatReviewButton sessionId={sessionId} directory={chat.directory} />}
           {(chatWork?.prUrl || chat?.prUrl) && (
             <PrConversationActions
               prUrl={chatWork?.prUrl ?? chat?.prUrl}

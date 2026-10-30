@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Bot, ChevronRight, CircleAlert, Loader2 } from 'lucide-react'
+import { ArrowUp, Bot, ChevronRight, CircleAlert, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Textarea } from '@/components/ui/textarea'
 import { useTranscriptVisibility } from '@/lib/transcript-stream'
 import type { AgentSession } from '@shared/types'
 import { FormCard, PermissionCard, useInbox } from './InboxView'
@@ -59,6 +60,18 @@ export function ChildAgentActivity({ sessionId, renderTranscript }: {
       void qc.invalidateQueries({ queryKey: ['session-children', sessionId] })
     }
   })
+  const [draft, setDraft] = useState('')
+  const running = !!selected && (activity.data?.includes(selected.sessionId) ?? false)
+  useEffect(() => { setDraft('') }, [selected?.sessionId])
+  const send = useMutation({
+    mutationFn: (text: string) => window.revva.chat.prompt(selected!.sessionId, text, undefined, running),
+    onSuccess: () => {
+      setDraft('')
+      void qc.invalidateQueries({ queryKey: ['chat-messages', selected!.sessionId] })
+      void qc.invalidateQueries({ queryKey: ['session-activity'] })
+      if (running) void qc.invalidateQueries({ queryKey: ['session-queue', selected!.sessionId] })
+    }
+  })
   const rows = children.data ?? []
   const waiting = inbox.filter((item) => item.rootId === sessionId)
   /** Does this agent wait on you directly, or does one of its descendants? */
@@ -104,13 +117,13 @@ export function ChildAgentActivity({ sessionId, renderTranscript }: {
         {children.isError && <p role="alert" className="py-1 text-xs text-destructive">Could not load agents. <Button size="xs" variant="outline" onClick={() => void children.refetch()}>Retry</Button></p>}
       </CollapsibleContent>
     </Collapsible>
-    <Dialog open={path.length > 0} onOpenChange={(open) => { if (!open) { setPath([]); stop.reset() } }}>
+    <Dialog open={path.length > 0} onOpenChange={(open) => { if (!open) { setPath([]); stop.reset(); send.reset() } }}>
       <DialogContent className="flex h-[85vh] max-h-[90vh] flex-col overflow-hidden sm:max-w-4xl" onCloseAutoFocus={(event) => { event.preventDefault(); trigger.current?.focus() }}>
         <DialogHeader className="min-w-0 shrink-0 pr-6">
           <DialogTitle className="truncate" title={selected?.title}>{selected?.title ?? 'Agent output'}</DialogTitle>
-          <DialogDescription className="break-words">{selected ? `${status(selected)}${selected.agentID ? ` · ${selected.agentID}` : ''}. Send follow-ups through the coordinator.` : 'This child session is no longer available.'}</DialogDescription>
+          <DialogDescription className="break-words">{selected ? `${status(selected)}${selected.agentID ? ` · ${selected.agentID}` : ''}. Follow-ups below go directly to this agent.` : 'This child session is no longer available.'}</DialogDescription>
         </DialogHeader>
-        {path.length > 1 && <Button type="button" size="sm" variant="ghost" className="max-w-full self-start shrink-0" title={`Back to ${path.at(-2)?.title}`} onClick={() => { setPath((current) => current.slice(0, -1)); stop.reset() }}><span className="truncate">Back to {path.at(-2)?.title}</span></Button>}
+        {path.length > 1 && <Button type="button" size="sm" variant="ghost" className="max-w-full self-start shrink-0" title={`Back to ${path.at(-2)?.title}`} onClick={() => { setPath((current) => current.slice(0, -1)); stop.reset(); send.reset() }}><span className="truncate">Back to {path.at(-2)?.title}</span></Button>}
         {selected && activity.data?.includes(selected.sessionId) && <Button type="button" size="sm" variant="outline" className="self-start shrink-0" disabled={stop.isPending} onClick={() => stop.mutate(selected.sessionId)}>{stop.isPending ? 'Stopping…' : 'Stop agent'}</Button>}
         {stop.error && <p role="alert" className="text-xs text-destructive shrink-0">{stop.error.message}</p>}
         {/* Requests and descendants share one shrinkable band, so the transcript below always keeps its reserved space. */}
@@ -122,7 +135,7 @@ export function ChildAgentActivity({ sessionId, renderTranscript }: {
               {descendants.data?.map((row) => {
                 const label = status(row)
                 const below = !waitsOn(row.sessionId).self && waitsOn(row.sessionId).below
-                return <Button key={row.sessionId} type="button" variant="ghost" className="h-auto w-full min-w-0 justify-start px-2 py-2 text-xs" aria-label={`${row.title}: ${label}${below ? ' (a delegated agent below needs you)' : ''}. Open agent output`} onClick={() => { setPath((current) => [...current, row]); stop.reset() }}>
+                return <Button key={row.sessionId} type="button" variant="ghost" className="h-auto w-full min-w-0 justify-start px-2 py-2 text-xs" aria-label={`${row.title}: ${label}${below ? ' (a delegated agent below needs you)' : ''}. Open agent output`} onClick={() => { setPath((current) => [...current, row]); stop.reset(); send.reset() }}>
                   {rowIcon(row, label)}<span className="min-w-0 flex-1 truncate text-left">{row.title}</span><span className="shrink-0 text-muted-foreground">{label}</span>
                 </Button>
               })}
@@ -131,6 +144,40 @@ export function ChildAgentActivity({ sessionId, renderTranscript }: {
           </div>
         )}
         {selected && <div className="flex min-h-[45%] min-w-0 flex-1 flex-col">{renderTranscript(selected)}</div>}
+        {selected && (
+          <form
+            className="shrink-0"
+            onSubmit={(event) => {
+              event.preventDefault()
+              if (draft.trim() && !send.isPending) send.mutate(draft.trim())
+            }}
+          >
+            {send.error instanceof Error && <p role="alert" className="mb-1 text-xs text-destructive">{send.error.message}</p>}
+            <div className="flex flex-col rounded-xl border border-input bg-background focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/30">
+              <Textarea
+                aria-label={`Message ${selected.title}`}
+                placeholder={running ? 'Queue a follow-up…' : 'Send a follow-up…'}
+                rows={2}
+                value={draft}
+                disabled={send.isPending}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                    event.preventDefault()
+                    event.currentTarget.form?.requestSubmit()
+                  }
+                }}
+                className="max-h-40 min-h-10 resize-none rounded-none border-0 bg-transparent px-4 pb-2 pt-3 shadow-none focus-visible:ring-0 dark:bg-transparent"
+              />
+              <div className="flex flex-wrap items-center justify-end gap-1 px-2 pb-2">
+                <span className="mr-auto px-1 text-xs text-muted-foreground">{running ? 'Queues behind the current turn' : 'Enter to send · Shift+Enter for a new line'}</span>
+                <Button type="submit" size="sm" disabled={!draft.trim() || send.isPending}>
+                  <ArrowUp data-icon="inline-start" /> {send.isPending ? 'Sending…' : 'Send'}
+                </Button>
+              </div>
+            </div>
+          </form>
+        )}
       </DialogContent>
     </Dialog>
   </section>

@@ -50,6 +50,7 @@ import {
   worktreeBranchesInputSchema,
   worktreeListInputSchema,
   conversationCheckoutInputSchema,
+  startChatReviewInputSchema,
   workAbandonInputSchema,
   type PromptImage,
   type PromptRefs
@@ -373,6 +374,7 @@ export function registerIpc(): void {
     const round = reviewManager.latestRound(String(workId)) + 1
     await reviewManager.startRound(String(workId), round, true)
   })
+  ipcMain.handle(IPC.workChatReview, (_e, input: unknown) => workManager.startChatReview(startChatReviewInputSchema.parse(input)))
   ipcMain.handle(IPC.workReviewStop, (_e, workId: string) => reviewManager.stopWork(String(workId)))
   ipcMain.handle(IPC.workReviewRetry, (_e, workId: string, reviewId: number) => {
     if (!Number.isSafeInteger(reviewId) || reviewId < 1) throw new Error('Invalid review ID.')

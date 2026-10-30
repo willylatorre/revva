@@ -502,6 +502,25 @@ export const workSummarySchema = z.object({
 })
 export type WorkSummary = z.infer<typeof workSummarySchema>
 
+/** One-click full review cycle from a conversation (`directory` anchors a chat that has no review row yet). */
+export const startChatReviewInputSchema = z.object({
+  sessionId: z.string().min(1),
+  directory: z.string().min(1).optional(),
+  /** Commit the uncommitted changes first; required when the checkout is dirty. */
+  commitMessage: z.string().min(1).max(4000).optional()
+})
+export type StartChatReviewInput = z.infer<typeof startChatReviewInputSchema>
+
+export interface ChatReviewResult {
+  /** `needs-commit` ⇒ nothing was changed or started; the listed files must be committed first. */
+  status: 'started' | 'needs-commit'
+  work: WorkSummary
+  /** `git status --porcelain` lines, capped, when `needs-commit`. */
+  files: string[]
+  /** What Revva did on the way (e.g. committed on the user's behalf). */
+  note?: string
+}
+
 export const startWorkInputSchema = z.object({
   ticketKey: z.string().min(1),
   repoDir: z.string().min(1),
@@ -967,6 +986,8 @@ export interface RevvaApi {
     reviews(workId: string): Promise<ReviewRow[]>
     /** Manually start another review round (e.g. after resolving a blocker). */
     reviewStart(workId: string): Promise<void>
+    /** Full review cycle from a chat: attach utilities, commit if asked, run reviewers → fixer → re-review. */
+    chatReview(input: StartChatReviewInput): Promise<ChatReviewResult>
     /** Retry one reviewer or failed fixer in the latest round. */
     reviewRetry(workId: string, reviewId: number): Promise<void>
     /** Stop reviewers/fixer, including sessions still running after a restart. No deletion. */
