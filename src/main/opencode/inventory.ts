@@ -23,8 +23,17 @@ export async function listModels(): Promise<ModelInfo[]> {
     Promise.resolve(favoriteModels())
   ])
   const favSet = new Set(favorites)
+  const seen = new Set<string>()
   return res.data
     .filter((m) => m.enabled)
+    // The service can publish the same provider::model twice (e.g. region variants
+    // of a Bedrock provider); the pickers key on providerID::id, so collapse here.
+    .filter((m) => {
+      const key = `${m.providerID}::${m.modelID ?? m.id}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
     .map((m) => {
       const model = {
         providerID: m.providerID,
