@@ -7,6 +7,10 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
+- (nothing yet)
+
+## [1.3.0] - 2026-10-30
+
 - **The top bar reads as the conversation** — the header strip used to open with the generic word “Conversation”, then trail the open chat's Thinking pill next to up to three look-alike ticket chips and a dead “+N more” badge, with no way to tell which belonged to what. Now the conversation's own title leads (renaming it renames the bar), followed by its activity pill and, only for a ticket run, one badge with that run's pipeline state. Everything the pipeline is doing on *other* tickets collapsed into a single “N tickets running” chip that opens a list — each row shows its state pill and ticket summary and jumps straight to that cockpit.
 
 - **Chat renaming** — a conversation's title was set once (typed at creation or auto-generated from the first message) and stuck. A pencil on the sidebar row's hover actions and a click on the name in the top bar open a rename dialog; the new name shows in the sidebar and top bar everywhere, and Revva mirrors it onto the OpenCode session so other clients agree (best-effort — the local rename wins if the service is down). The conversation's own header row no longer repeats the title — the name now shows once, in the top bar. Ticket links are untouched; ticket keys are Jira's and stay as they are.
