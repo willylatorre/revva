@@ -39,6 +39,7 @@ Original plans stamped commit `830a20f` (typecheck clean there as of 2026-10-28)
 | 019 | [Suppress proven-redundant tool history refreshes](019-suppress-redundant-tool-history-refresh.md) | P1 | M | 017, 018 | DONE — merged locally into main at 6174c4e; isolated merge gates passed; WIP restored and backup stash retained; not pushed; manual recovery checks outstanding |
 | 020 | [Cache completed Markdown representations](020-cache-completed-markdown.md) | P2 | M | 017/018 | DONE — merged locally via db6dabe; advisor gates and actual-source cache/React probes passed; GUI profiling outstanding; not pushed |
 | 021 | [Measure a faster Markdown parser](021-markdown-parser-performance-spike.md) | P3 | M–L | 017/018 for research; 020 only if future adoption pursued | DONE — research/deferral report merged locally via 6dd7e76; production parser/CSP unchanged; no replacement this round; not pushed |
+| 022 | [Preserve fences after blockquote continuation](022-streaming-quote-fence-fallback.md) | P1 | S | 018; combined review | DONE — merged locally via fast-forward c32016e; gates and differential probe passed; GUI streaming check outstanding; not pushed |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
