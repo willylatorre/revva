@@ -13,7 +13,8 @@
  * so grouping extra lines together renders identically. Only splitting where
  * the real parser would keep one block could corrupt the render, which is why
  * every ambiguity delays a boundary instead of risking one. The boundary scan
- * itself still visits the whole document per call — this is not O(delta).
+ * visits the whole document once per call (linear: blank runs are resolved by
+ * one precomputed pass) — this is not O(delta).
  */
 
 const BLANK_LINE = /^[ \t]*$/
@@ -25,16 +26,23 @@ const FENCE_INSIDE = /^\s*(```|~~~)/
 const QUOTE_FENCE = /^ {0,3}>(?:\s*>)*\s*(```|~~~)/
 const BULLET_ITEM = /^( *)([-+*])(?:[ \t]|$)/
 const ORDERED_ITEM = /^( *)(\d{1,9})([.)])(?:[ \t]|$)/
-/** Link reference and footnote definitions resolve across the whole document.
- *  Checked at any indent: a false positive only costs a full re-parse. */
-const DEFINITION = /^\s*\[[^\]]*\]:[ \t]*\S?/
 /** Raw HTML block openers (react-markdown escapes them, but the block parser
  *  still swallows following lines, so a split inside one could diverge). */
 const HTML_BLOCK = /^\s*<(?:[A-Za-z][A-Za-z0-9-]*(?=[ \t/>]|$)|\/[A-Za-z][A-Za-z0-9-]*\s*>|[!?])/
+/** Link reference and footnote definitions resolve across the whole document,
+ *  their labels can span lines, and they hide behind blockquote/list prefixes —
+ *  no per-line check is trustworthy. This source-wide signal fires on any
+ *  `]` + optional blanks + `:`, deliberately also inside fenced code, escaped
+ *  brackets, and prose like "[sic]: x". False positives only cost the
+ *  whole-document-parse fallback: correctness over optimization. */
+const POSSIBLE_DEFINITION = /\][ \t]*(?:\r?\n[ \t]*)?:/
 
 export interface StreamingMarkdownSplit {
-  /** Whole top-level blocks in document order; their sources stop changing
-   *  while the answer only appends. Empty when no boundary is provable yet. */
+  /** Whole top-level blocks in document order, as settled by the current
+   *  prefix. Boundaries may still shift while the answer grows (an incomplete
+   *  lookahead line can later become a list marker and re-open a block), so
+   *  callers must recompute from the full source on every update — a shifted
+   *  boundary re-renders that block, never keeps a stale one. */
   blocks: string[]
   /** Everything after the last provable boundary; re-parsed on each update. */
   tail: string
@@ -54,11 +62,6 @@ function indentOf(line: string): number {
     else break
   }
   return n
-}
-
-function nextContent(lines: string[], from: number): number | null {
-  for (let i = from; i < lines.length; i += 1) if (!BLANK_LINE.test(lines[i]!)) return i
-  return null
 }
 
 function listMarker(line: string): ListMarker | null {
@@ -88,7 +91,16 @@ function findFenceClose(lines: string[], from: number, fence: string): number | 
  * the mutable remainder; an empty `blocks` simply means "not settled yet".
  */
 export function splitStreamingMarkdown(source: string): StreamingMarkdownSplit | null {
+  // Source-wide, before any line work: covers labels spanning lines, a colon
+  // on the following line, container prefixes, and escaped brackets alike.
+  if (POSSIBLE_DEFINITION.test(source)) return null
   const lines = source.split('\n')
+  // One linear pass resolving every blank run to its next content line, so
+  // lookahead inside the scan is O(1) and the whole scan stays O(n).
+  const nextContent = new Int32Array(lines.length + 1).fill(-1)
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    nextContent[i] = !BLANK_LINE.test(lines[i]!) ? i : nextContent[i + 1]!
+  }
   const blocks: string[] = []
   let blockStart = 0
   let inQuote = false
@@ -97,17 +109,17 @@ export function splitStreamingMarkdown(source: string): StreamingMarkdownSplit |
   let i = 0
   while (i < lines.length) {
     const line = lines[i]!
-    // Definitions and raw HTML blocks change how later lines parse no matter
-    // where the split lands. (Fenced code is skipped by the index jump below,
-    // where such lines are literal and safe.)
-    if (DEFINITION.test(line) || HTML_BLOCK.test(line)) return null
+    // Raw HTML blocks change how later lines parse no matter where the split
+    // lands. (Fenced code is skipped by the index jump below, where such
+    // lines are literal and safe.)
+    if (HTML_BLOCK.test(line)) return null
 
     if (inQuote) {
       if (QUOTE_FENCE.test(line)) return null
       if (BLOCKQUOTE_LINE.test(line)) { i += 1; continue }
       if (BLANK_LINE.test(line)) {
-        const next = nextContent(lines, i + 1)
-        if (next === null) break // trailing blanks: quote unclosed for now
+        const next = nextContent[i + 1]!
+        if (next === -1) break // trailing blanks: quote unclosed for now
         if (BLOCKQUOTE_LINE.test(lines[next]!)) { i = next; continue }
         inQuote = false // blank lines end lazy continuation, so this quote closed
         if (indentOf(lines[next]!) < 4) {
@@ -123,12 +135,28 @@ export function splitStreamingMarkdown(source: string): StreamingMarkdownSplit |
 
     if (inList) {
       if (FENCE_INSIDE.test(line)) return null
+      const marker = listMarker(line)
+      if (marker) {
+        if (marker.contentStartsWithFence) return null
+        // Sibling/nested markers can sit at different columns ('100. a' then
+        // '1. b'); the outer list needs the *smallest* observed content column
+        // so later shallower continuations keep the list open. Nesting deeper
+        // never raises this minimum.
+        listContentIndent = Math.min(listContentIndent, marker.contentIndent)
+        i += 1
+        continue
+      }
       if (BLANK_LINE.test(line)) {
-        const next = nextContent(lines, i + 1)
-        if (next === null) break
+        const next = nextContent[i + 1]!
+        if (next === -1) break
         const nextLine = lines[next]!
         if (indentOf(nextLine) >= listContentIndent) { i += 1; continue } // item content or code block
-        if (listMarker(nextLine)) { i += 1; continue } // sibling (or a regrouped new list)
+        const nextMarker = listMarker(nextLine)
+        if (nextMarker) {
+          listContentIndent = Math.min(listContentIndent, nextMarker.contentIndent)
+          i += 1
+          continue // sibling (or a regrouped new list) — never settle between list-like lines
+        }
         if (BLOCKQUOTE_LINE.test(nextLine)) {
           if (indentOf(nextLine) >= 4) { i += 1; continue } // code block: keep the list open
           inList = false // a quote at column < content closes the list
@@ -149,13 +177,13 @@ export function splitStreamingMarkdown(source: string): StreamingMarkdownSplit |
         }
         continue
       }
-      i += 1 // continuation, nested content, or a sibling marker: list stays open
+      i += 1 // lazy continuation keeps the list open
       continue
     }
 
     if (BLANK_LINE.test(line)) {
-      const next = nextContent(lines, i + 1)
-      if (next === null) break
+      const next = nextContent[i + 1]!
+      if (next === -1) break
       if (indentOf(lines[next]!) < 4) {
         if (i > blockStart) blocks.push(lines.slice(blockStart, i).join('\n'))
         blockStart = next
