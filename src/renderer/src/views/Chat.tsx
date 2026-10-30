@@ -1028,7 +1028,9 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
       onNewSession={onOpenChat && chat ? newSession : undefined}
       header={
         <>
-          <span className="min-w-0 flex-1 truncate text-[13px] font-medium" title={chat?.title ?? chatWork?.ticketSummary}>{chat?.title ?? chatWork?.ticketSummary ?? 'Chat'}</span>
+          {/* The conversation's name (and its rename affordance) lives in the
+              app's top bar — repeating it here only duplicated the title. */}
+          <span aria-hidden className="min-w-0 flex-1" />
           {chat && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>

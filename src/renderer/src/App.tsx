@@ -17,22 +17,25 @@ import {
   Undo2,
   Eraser,
   Coffee,
+  Pencil,
   Inbox as InboxIcon
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { ConnectionStatus } from '@/components/ConnectionStatus'
 import { cn } from '@/lib/utils'
 import { subscribeTranscripts } from '@/lib/transcript-stream'
-import { isActiveWorkState, workStateLabels } from '@/lib/work-state'
+import { activeWorkLabel, isActiveWorkState, workStateLabels, workStateTone } from '@/lib/work-state'
 import { parsePrRef } from '@shared/pr-ref'
+import type { WorkSummary } from '@shared/types'
 import { SetupView } from '@/views/Setup'
 import { ChatView } from '@/views/Chat'
 import { NewChatDialog } from '@/views/NewChatDialog'
+import { RenameChatDialog } from '@/views/RenameChatDialog'
 import { WorktreesDialog, WorktreeRemovalDialog, type WorktreeRemovalRow } from '@/views/WorktreesDialog'
 import { DashboardView } from '@/views/DashboardView'
 import { BoardView } from '@/views/BoardView'
@@ -78,6 +81,7 @@ export default function App(): React.JSX.Element {
   const [worktreesOpen, setWorktreesOpen] = useState(false)
   const [abandonTarget, setAbandonTarget] = useState<{ workId: string; row: WorktreeRemovalRow; deleteChat?: boolean } | null>(null)
   const [abandonBusy, setAbandonBusy] = useState(false)
+  const [renameTarget, setRenameTarget] = useState<{ sessionId: string; title: string } | null>(null)
 
   useEffect(() => subscribeTranscripts(qc), [qc])
 
@@ -186,6 +190,13 @@ export default function App(): React.JSX.Element {
     prGroups.set(chat.prUrl, group)
   }
   const runningWorks = ongoingWorks.filter((w) => w.id !== activeWork?.id && isActiveWorkState(w.state))
+  /** The strip shows what you are looking at: the conversation's own name, not
+   *  the generic word “Conversation”. Renaming a conversation renames the strip. */
+  const stripTitle =
+    view.kind === 'work' || view.kind === 'chat'
+      ? (chats.data?.find((c) => c.sessionId === (view.kind === 'chat' ? view.sessionId : activeWork?.sessionId))?.title ??
+        (activeWork ? `${activeWork.ticketKey}: ${activeWork.ticketSummary}` : undefined))
+      : undefined
   // Inbox badge: pending questions/permissions + finished runs nobody has seen.
   const inboxCount =
     pending.length +
@@ -248,12 +259,13 @@ export default function App(): React.JSX.Element {
       })
       .catch((err) => alert(`Could not remove ticket link: ${(err as Error).message}`))
   }
-  /** Hover actions on a chat row: unlink while it lives in a ticket group, plus delete. */
+  /** Hover actions on a chat row: unlink while it lives in a ticket group, rename, delete. */
   const chatActions = (chat: { sessionId: string; title: string; ticketKey?: string }): React.JSX.Element => (
     <>
       {chat.ticketKey && (
         <NavAction title="Remove from ticket (keeps the chat)" neutral onClick={() => unlinkFromTicket(chat.sessionId)} icon={<Undo2 className="size-3.5" />} />
       )}
+      <NavAction title="Rename chat" neutral onClick={() => setRenameTarget({ sessionId: chat.sessionId, title: chat.title })} icon={<Pencil className="size-3.5" />} />
       <NavAction title="Delete chat" onClick={() => deleteChat(chat.sessionId, chat.title)} />
     </>
   )
@@ -571,33 +583,35 @@ export default function App(): React.JSX.Element {
 
       <main className="flex min-w-0 flex-1 flex-col">
         <div className="drag-region flex h-11 shrink-0 items-center gap-2 border-b px-3">
-          <span className="no-drag min-w-0 truncate text-[13px] font-medium text-muted-foreground">
-            {view.kind === 'work' || view.kind === 'chat' ? 'Conversation' : <span className="capitalize">{view.kind}</span>}
-          </span>
-          {selectedActivity && <ActivityBadge activity={selectedActivity} />}
-          {runningWorks.slice(0, 3).map((w) => (
+          {stripTitle && selectedSessionId ? (
             <button
-              key={w.id}
-              onClick={() => setView({ kind: 'work', workId: w.id })}
-              className={cn(
-                'no-drag flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] transition-colors hover:bg-accent',
-                w.state === 'BUILDING' && 'border-sky-500/40 text-sky-700 dark:text-sky-400',
-                w.state === 'REVIEW' && 'border-violet-500/40 text-violet-700 dark:text-violet-400',
-                w.state === 'FIXING' && 'border-orange-500/40 text-orange-700 dark:text-orange-400',
-                w.state === 'REWORK' && 'border-pink-500/40 text-pink-700 dark:text-pink-400',
-                w.state === 'WAITING_HUMAN' && 'border-amber-500/40 text-amber-700 dark:text-amber-400'
-              )}
-              title={`${w.ticketKey} · ${w.state}`}
+              onClick={() => setRenameTarget({ sessionId: selectedSessionId, title: stripTitle })}
+              title={`${stripTitle} — click to rename`}
+              className="group/rename no-drag flex min-w-0 max-w-[45%] items-center gap-1.5 rounded-md px-1 py-0.5 text-left hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring"
             >
-              <Hammer className={cn('size-3', (w.state === 'BUILDING' || w.state === 'REVIEW' || w.state === 'FIXING' || w.state === 'REWORK') && 'animate-pulse')} />
-              {w.ticketKey}
-              <span className="opacity-70">{w.state === 'WAITING_HUMAN' ? 'needs you' : w.state.toLowerCase()}</span>
+              <span className="truncate text-[13px] font-medium">{stripTitle}</span>
+              <Pencil className="size-3 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover/rename:opacity-100 group-focus-visible/rename:opacity-100" />
             </button>
-          ))}
-          {runningWorks.length > 3 && (
-            <Badge variant="outline" className="no-drag font-normal">+{runningWorks.length - 3} more</Badge>
+          ) : (
+            <span className="no-drag min-w-0 max-w-[45%] truncate text-[13px] font-medium text-muted-foreground">
+              {view.kind === 'work' || view.kind === 'chat' ? 'Conversation' : <span className="capitalize">{view.kind}</span>}
+            </span>
+          )}
+          {selectedActivity && <ActivityBadge activity={selectedActivity} />}
+          {activeWork && isActiveWorkState(activeWork.state) && (
+            <span
+              className={cn(
+                'no-drag inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium',
+                workStateTone(activeWork.state)
+              )}
+              title={`${activeWork.ticketKey} · pipeline ${activeWork.state.toLowerCase()}`}
+            >
+              <Hammer className="size-3 motion-safe:animate-pulse" />
+              {activeWorkLabel(activeWork.state)}
+            </span>
           )}
           <div className="ml-auto flex items-center gap-2">
+            {runningWorks.length > 0 && <RunningWorkPopover works={runningWorks} onOpenWork={(workId) => setView({ kind: 'work', workId })} />}
             <button
               onClick={() => setView({ kind: 'inbox' })}
               className={cn(
@@ -651,6 +665,13 @@ export default function App(): React.JSX.Element {
         open={newChatOpen}
         onOpenChange={setNewChatOpen}
         onCreated={(sessionId) => setView({ kind: 'chat', sessionId })}
+      />
+
+      <RenameChatDialog
+        open={renameTarget !== null}
+        onOpenChange={(next) => !next && setRenameTarget(null)}
+        sessionId={renameTarget?.sessionId ?? ''}
+        currentTitle={renameTarget?.title ?? ''}
       />
 
       <WorktreesDialog
@@ -757,6 +778,48 @@ function ActivityBadge({ activity }: { activity: SessionActivity }): React.JSX.E
       <span aria-hidden="true" className={cn('size-1.5 rounded-full bg-current', activity === 'Thinking' && 'motion-safe:animate-pulse')} />
       {activity === 'Thinking' ? 'Thinking…' : activity}
     </span>
+  )
+}
+
+/**
+ * Everything the pipeline is doing *elsewhere*, collapsed into one chip: the
+ * top bar belongs to the open conversation, so other tickets only list
+ * themselves on demand. Each row opens that ticket's cockpit.
+ */
+function RunningWorkPopover({ works, onOpenWork }: { works: WorkSummary[]; onOpenWork: (workId: string) => void }): React.JSX.Element {
+  return (
+    <Popover>
+      <PopoverTrigger
+        className={cn(
+          'no-drag inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] font-medium transition-colors hover:bg-accent',
+          works.some((w) => w.state === 'WAITING_HUMAN')
+            ? 'border-amber-500/40 text-amber-700 dark:text-amber-400'
+            : 'text-muted-foreground'
+        )}
+        title="Other tickets the pipeline is working on"
+      >
+        <Hammer className="size-3.5 motion-safe:animate-pulse" />
+        {works.length} ticket{works.length === 1 ? '' : 's'} running
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-80 gap-1.5 p-1.5">
+        <p className="px-1.5 pt-1 text-[11px] font-medium text-muted-foreground">Running in the pipeline</p>
+        {works.map((w) => (
+          <button
+            key={w.id}
+            onClick={() => onOpenWork(w.id)}
+            className="flex w-full flex-col gap-0.5 rounded-md px-1.5 py-1.5 text-left hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring"
+          >
+            <span className="flex items-center gap-1.5 text-[12px] font-medium">
+              <span className={cn('inline-flex items-center gap-1 rounded-full border px-1.5 py-px text-[10px] font-medium', workStateTone(w.state))}>
+                {activeWorkLabel(w.state)}
+              </span>
+              <span className="truncate">{w.ticketKey}</span>
+            </span>
+            <span className="truncate pl-0.5 text-[11px] text-muted-foreground">{w.ticketSummary}</span>
+          </button>
+        ))}
+      </PopoverContent>
+    </Popover>
   )
 }
 

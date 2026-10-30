@@ -448,8 +448,20 @@ class ChatManager {
     await openCodeService.api.session.interrupt({ sessionID: sessionId })
   }
 
-  rename(sessionId: string, title: string): void {
-    getDb().prepare('UPDATE chat SET title = ? WHERE session_id = ?').run(title.trim() || 'Chat', sessionId)
+  /**
+   * Rename a conversation. Revva's index is the source of truth (a manual
+   * title already outranks OpenCode's auto-title, see `session.renamed`); the
+   * session itself is updated best-effort so other clients show the same name.
+   */
+  async rename(sessionId: string, title: string): Promise<void> {
+    const next = (title.trim() || 'Chat').slice(0, 100)
+    getDb().prepare('UPDATE chat SET title = ? WHERE session_id = ?').run(next, sessionId)
+    pushToWindows({ kind: 'chat.renamed', sessionId, title: next })
+    if (openCodeService.connected) {
+      await openCodeService.api.session.update({ sessionID: sessionId, title: next }).catch((err) => {
+        console.warn('[chat] could not mirror title on the OpenCode session:', describeError(err))
+      })
+    }
   }
 
   /**
