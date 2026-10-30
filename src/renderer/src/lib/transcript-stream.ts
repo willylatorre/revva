@@ -92,11 +92,14 @@ const displayed = new Map<string, Displayed>()
 
 /**
  * Tool applications this window actually accepted from a live batch, awaiting
- * the matching `chat.tool` hint: `${messageId}:${toolId}` → applied state.
- * Populated only outside loading/prefix replay (a snapshot merge is not proof
- * the live path covered the tool), cleared on every reset/gap/release, and
- * consumed once by the hint that maps to the identical lifecycle state. A hint
- * without a live matching receipt keeps the unconditional history refresh.
+ * the matching `chat.tool` hint: JSON tuple of `[messageId, toolId]` (native
+ * IDs are opaque — never concatenated with a separator that could collide) →
+ * applied state. Populated only outside loading/prefix replay (a snapshot
+ * merge is not proof the live path covered the tool), cleared on every reset,
+ * gap/release, and snapshot begin, and consumed by its hint even when the
+ * hint then falls back — a covered hint never leaves coverage behind. A hint
+ * without usable IDs clears the session's receipts conservatively. Every
+ * fallback keeps the unconditional history refresh.
  */
 const toolReceipts = new Map<string, Map<string, ChatToolCall['state']>>()
 const LIFECYCLE_STATE: Record<string, ChatToolCall['state']> = {
@@ -110,16 +113,27 @@ function clearToolReceipts(sessionId?: string): void {
 }
 function takeToolReceipt(qc: QueryClient, event: ToolHint): boolean {
   const state = LIFECYCLE_STATE[event.state]
-  if (!state || !event.messageId || !event.toolId) return false
+  if (!state || !event.messageId || !event.toolId) {
+    // Main could not prove coverage for this event: treat every pending
+    // receipt for the session as stale and keep the refresh.
+    clearToolReceipts(event.sessionId)
+    return false
+  }
+  const key = JSON.stringify([event.messageId, event.toolId])
   const receipts = toolReceipts.get(event.sessionId)
-  const key = `${event.messageId}:${event.toolId}`
-  if (receipts?.get(key) !== state) return false
+  const receipt = receipts?.get(key)
+  if (receipt !== undefined) receipts!.delete(key) // consumed regardless of the outcome below
+  if (receipt !== state) return false
+  // The receipt only covers this hint while the displayed attachment is
+  // still whole — a snapshot can begin between the covering batch and the
+  // hint, or finish with this message awaiting its prefix.
+  const surface = displayed.get(event.sessionId)
+  if (!surface?.attachment || surface.loading || surface.forceReset || surface.awaiting.has(event.messageId)) return false
   // A displayed native history state that contradicts the applied live
   // terminal state stays authoritative: keep the refresh instead of suppressing.
   const history = qc.getQueryData<ChatMessage[]>(['chat-messages', event.sessionId])
   const saved = history?.find((row) => row.id === event.messageId)?.tools?.find((tool) => tool.id === event.toolId)
   if ((saved?.state === 'completed' || saved?.state === 'error') && saved.state !== state) return false
-  receipts.delete(key)
   return true
 }
 
@@ -171,6 +185,10 @@ export function beginTranscriptSnapshot(sessionId: string): boolean {
   const state = displayed.get(sessionId)
   if (!state) return true
   state.loading = true
+  // A snapshot refetch replaces live coverage: batches arriving during
+  // loading queue as pending replay (never receipted), so anything recorded
+  // before this point must not suppress hints around the snapshot.
+  clearToolReceipts(sessionId)
   return state.forceReset
 }
 
@@ -209,7 +227,7 @@ function applyBatch(qc: QueryClient, event: Batch, live = false): boolean {
               receipts = new Map()
               toolReceipts.set(event.sessionId, receipts)
             }
-            receipts.set(`${update.messageId}:${update.partId}`, tool.state)
+            receipts.set(JSON.stringify([update.messageId, update.partId]), tool.state)
             while (receipts.size > 256) receipts.delete(receipts.keys().next().value!)
           }
         } else if (previous?.state === 'streaming') {
