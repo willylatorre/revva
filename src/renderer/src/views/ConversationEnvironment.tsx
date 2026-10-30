@@ -131,9 +131,12 @@ export function ConversationDetails({ sessionId, directory, work, children }: {
   })
   const here = work?.worktreeDir ?? directory ?? ''
   const picked = worktree ?? (here || null)
-  // A run whose folder became a checkout only after the conversation opened (Chat with
-  // this PR) keeps a blank branch in its row; opening these details re-reads git once,
-  // so the panel and the pickers below tell the truth before Apply is ever pressed.
+  // Opening these details re-reads git once against the conversation's live session —
+  // for every attached run, not just the ones that anchored before their folder became
+  // a checkout (the blank-branch case) — so the readouts and the pickers below always
+  // tell the truth, even when the session moved while Revva was closed. Terminal rows
+  // are excluded: main answers those with its own refusal or a no-op, never a re-read.
+  const revalidatable = !!work && work.state !== 'SHIPPED' && work.state !== 'ABANDONED'
   const reanchor = useQuery({
     queryKey: ['conversation-context', sessionId, 'heal'],
     queryFn: async () => {
@@ -141,15 +144,18 @@ export function ConversationDetails({ sessionId, directory, work, children }: {
       await qc.invalidateQueries({ queryKey: ['works'] })
       return healed
     },
-    enabled: open && !!work && !work.branch,
+    enabled: open && revalidatable,
     retry: false,
-    staleTime: Infinity
+    staleTime: 0,
+    refetchOnWindowFocus: false
   })
-  const anchorNote = work && !work.branch
-    ? reanchor.isError
+  // Only the case still worth a line gets one: a branch that has not resolved yet,
+  // or a re-read that failed. Verification that changed nothing stays invisible.
+  const anchorNote = !work || !revalidatable || work.branch
+    ? null
+    : reanchor.isError
       ? `Revva could not re-read this checkout: ${reanchor.error instanceof Error ? reanchor.error.message : String(reanchor.error)}`
       : 'Revva is re-reading this checkout…'
-    : null
   const branches = useQuery({
     queryKey: ['worktree-branches', picked],
     queryFn: () => window.revva.worktrees.branches({ directory: picked ?? here }),
@@ -158,7 +164,13 @@ export function ConversationDetails({ sessionId, directory, work, children }: {
   const repoRoot = branches.data?.repoDir
   const shown = (worktrees.data ?? []).filter((wt) => !repoRoot || wt.repoDir === repoRoot)
   const listed = shown.some((wt) => wt.directory === picked)
-  const busy = work?.state === 'BUILDING' || work?.state === 'REVIEW' || work?.state === 'FIXING' || work?.state === 'SHIPPED'
+  // States where main refuses a move already (setCheckout guards): instead of two dead
+  // disabled pickers plus insurance prose, one line says why and what unlocks it.
+  // (ABANDONED is not locked: moving such a session simply anchors a fresh run.)
+  const locked = work?.state === 'SHIPPED' ? 'This run shipped — it keeps the checkout it shipped from.'
+    : work?.state === 'BUILDING' ? 'The conversation is implementing — stop the response before moving it.'
+    : work?.state === 'REVIEW' || work?.state === 'FIXING' ? 'Review is running — stop it before moving this conversation.'
+    : null
   const chooseWorktree = (value: string): void => {
     setWorktree(value === NONE ? null : value)
     setBranch(null)
@@ -204,15 +216,18 @@ export function ConversationDetails({ sessionId, directory, work, children }: {
       <div className="flex flex-col gap-3">
         <PopoverHeader className="gap-1">
           <PopoverTitle className="text-sm">Where this conversation works</PopoverTitle>
-          <PopoverDescription>Both lists are Revva’s own — worktrees it knows and branches git reports. Nothing is created, renamed or deleted.</PopoverDescription>
+          <PopoverDescription>Move the conversation to one of Revva’s worktrees, or switch its branch. Nothing is created, renamed or deleted.</PopoverDescription>
         </PopoverHeader>
+        {locked ? (
+          <p className="text-xs text-muted-foreground">{locked}</p>
+        ) : <>
         <div className="flex flex-col gap-1.5">
           <label className="text-xs text-muted-foreground" htmlFor={`${sessionId}-worktree`}>Worktree</label>
           <select
             id={`${sessionId}-worktree`}
             className="h-8 w-full rounded-md border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
             value={picked ?? NONE}
-            disabled={busy || saving || (worktrees.isPending && !worktrees.data)}
+            disabled={saving || (worktrees.isPending && !worktrees.data)}
             onChange={(event) => chooseWorktree(event.target.value)}
           >
             {!picked && <option value={NONE}>Loading…</option>}
@@ -225,15 +240,10 @@ export function ConversationDetails({ sessionId, directory, work, children }: {
               </option>
             ))}
           </select>
-          <p className="text-xs text-muted-foreground">
-            {branches.isError
-              ? (branches.error instanceof Error ? branches.error.message : String(branches.error))
-              : branches.data
-                ? `${branches.data.repoDir}${branches.data.mainCheckout ? ' — the main checkout of this repository' : ''}`
-                : worktrees.isError
-                  ? 'Revva could not list its worktrees. The branch list below still reads git directly.'
-                  : 'Reading git…'}
-          </p>
+          {/* The folder is already the readout above; only what the select cannot say —
+              this checkout is the repository itself, or git could not be read — earns a line. */}
+          {branches.isError && <p className="text-xs text-muted-foreground">{branches.error instanceof Error ? branches.error.message : String(branches.error)}</p>}
+          {branches.data?.mainCheckout && <p className="text-xs text-muted-foreground">The main checkout of this repository</p>}
         </div>
         <div className="flex flex-col gap-1.5">
           <label className="text-xs text-muted-foreground" htmlFor={`${sessionId}-branch`}>Branch</label>
@@ -243,7 +253,7 @@ export function ConversationDetails({ sessionId, directory, work, children }: {
             id={`${sessionId}-branch`}
             className="h-8 w-full rounded-md border border-input bg-transparent px-2.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
             value={branch ?? NONE}
-            disabled={busy || saving || !branches.data}
+            disabled={saving || !branches.data}
             onChange={(event) => { setBranch(event.target.value === NONE ? null : event.target.value); setNote(null) }}
           >
             <option value={NONE}>{branches.data ? `Stay on ${branches.data.current || 'the current checkout'}` : branches.isError ? 'Git could not read this checkout' : 'Loading…'}</option>
@@ -255,14 +265,14 @@ export function ConversationDetails({ sessionId, directory, work, children }: {
             ))}
           </select>}
         </div>
+        </>}
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" disabled={saving || busy || (!worktree && !branch)} onClick={() => void apply({ directory: worktree ?? undefined, branch: branch ?? undefined })}>
+          <Button size="sm" disabled={saving || !!locked || (!worktree && !branch)} onClick={() => void apply({ directory: worktree ?? undefined, branch: branch ?? undefined })}>
             {saving && <Loader2 data-icon="inline-start" className="animate-spin" />}
             {saving ? 'Working…' : 'Apply'}
           </Button>
-          <span className="text-xs text-muted-foreground">A dirty checkout is refused before git runs.</span>
+          {branch && !locked && <span className="text-xs text-muted-foreground">Uncommitted changes are refused before git runs.</span>}
         </div>
-        {work && <p className="text-xs text-muted-foreground">This run’s folder and branch follow the guards of its state; a shipped run keeps the checkout it shipped from.</p>}
         {note && <p className="text-xs text-muted-foreground">{note}</p>}
         {anchorNote && <p className="text-xs text-muted-foreground">{anchorNote}</p>}
         {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
