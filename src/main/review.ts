@@ -301,6 +301,7 @@ class ReviewManager {
       unfence = agentSessions.fenceReview(build.session_id)
       await this.requireStoppedReviews(workId)
       if (!work.branch) throw new Error('Choose the conversation’s Git worktree and check out a branch before starting review.')
+      await this.requireImplementationCheckout(build.session_id, work.worktree_dir)
       const attached = (await exec('git', ['-C', work.worktree_dir, 'branch', '--show-current'])).stdout.trim()
       if (attached !== work.branch) throw new Error('The checkout branch changed. Re-select the review folder before starting review.')
       await agentSessions.requireStoppedTree(build.session_id)
@@ -396,6 +397,7 @@ class ReviewManager {
       unfence = agentSessions.fenceReview(build.session_id)
       await this.requireStoppedReviews(workId)
       await agentSessions.requireStoppedTree(build.session_id)
+      await this.requireImplementationCheckout(build.session_id, work.worktree_dir)
       const changes = rows.filter((r) => r.role !== 'fixer' && r.status === 'changes')
       if (row.role === 'fixer') {
         if (!changes.length || rows.some((r) => r.role !== 'fixer' && r.status === 'error')) throw new Error('Resolve reviewer errors before resuming the fixer.')
@@ -732,27 +734,32 @@ class ReviewManager {
     }
     if (changes.length === 0) {
       this.starting.add(workId)
+      let unfence = (): void => undefined
       try {
-        const work = getDb().prepare('SELECT worktree_dir, review_head, session_id FROM work WHERE id = ?').get(workId) as { worktree_dir: string; review_head: string | null; session_id: string | null }
+        const work = getDb().prepare('SELECT worktree_dir, branch, review_head, session_id FROM work WHERE id = ?').get(workId) as { worktree_dir: string; branch: string; review_head: string | null; session_id: string | null }
+        unfence = agentSessions.fenceReview(work.session_id)
         await agentSessions.requireStoppedTree(work.session_id)
-        const [head, status] = await Promise.all([
+        const [head, status, branch] = await Promise.all([
           exec('git', ['-C', work.worktree_dir, 'rev-parse', 'HEAD']),
-          exec('git', ['-C', work.worktree_dir, 'status', '--porcelain'])
+          exec('git', ['-C', work.worktree_dir, 'status', '--porcelain']),
+          exec('git', ['-C', work.worktree_dir, 'branch', '--show-current'])
         ])
-        if (!work.review_head || head.stdout.trim() !== work.review_head || status.stdout.trim()) {
+        if (!work.branch || branch.stdout.trim() !== work.branch || !work.review_head || head.stdout.trim() !== work.review_head || status.stdout.trim()) {
           throw new Error('The worktree changed during review. Commit the changes and re-run review.')
         }
+        await this.requireImplementationCheckout(work.session_id, work.worktree_dir)
+        this.audit(workId, round, 'approved', rows.map((r) => `${r.role}: ${r.status}`).join(', '))
+        workManager.setReviewState(workId, 'APPROVED')
       } catch (err) {
         const reason = describeError(err)
         workManager.setReviewState(workId, 'WAITING_HUMAN', `Review blocked: ${reason}`)
         this.audit(workId, round, 'review-invalidated', reason)
         return
       } finally {
+        unfence()
         this.starting.delete(workId)
       }
       const work = getDb().prepare('SELECT mode, ship_on_approve FROM work WHERE id = ?').get(workId) as { mode: string; ship_on_approve: number | null } | undefined
-      this.audit(workId, round, 'approved', rows.map((r) => `${r.role}: ${r.status}`).join(', '))
-      workManager.setReviewState(workId, 'APPROVED')
       // Saved human instructions win over automatic delivery of the old commit.
       if (await workManager.drainFollowUps(workId)) return
       if (work?.mode === 'auto' || work?.ship_on_approve) {
@@ -798,6 +805,7 @@ class ReviewManager {
       const api = openCodeService.api
       const build = getDb().prepare('SELECT session_id FROM work WHERE id = ?').get(workId) as { session_id: string | null }
       await agentSessions.requireStoppedTree(build.session_id)
+      await this.requireImplementationCheckout(build.session_id, work.worktree_dir)
       const previous = resume?.sessionId ? await api.session.get({ sessionID: resume.sessionId }).catch((err) => {
         if ((err as { _tag?: string })._tag === 'SessionNotFoundError') return undefined
         throw err
@@ -847,6 +855,18 @@ class ReviewManager {
   }
 
   /* ---------- helpers ---------- */
+
+  /** The session may work in a subdirectory, but must still be in the anchored checkout. */
+  private async requireImplementationCheckout(sessionId: string | null, directory: string): Promise<void> {
+    if (!sessionId) throw new Error('The implementation conversation is missing. Re-select the review folder before reviewing.')
+    const session = await openCodeService.api.session.get({ sessionID: sessionId })
+    const checkout = await exec('git', ['-C', session.location.directory, 'rev-parse', '--show-toplevel'])
+      .then((result) => result.stdout.trim())
+      .catch(() => { throw new Error('The implementation conversation is no longer in a Git checkout. Re-select the review folder before reviewing.') })
+    if (await realpath(checkout) !== await realpath(directory)) {
+      throw new Error('The implementation conversation moved to another checkout. Re-select the review folder and re-run review.')
+    }
+  }
 
   /** Pin one base for the whole round, including individual retries. */
   private async reviewScope(work: { branch: string; worktree_dir: string; parent_work_id: string | null }): Promise<ReviewScope> {

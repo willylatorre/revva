@@ -483,7 +483,9 @@ export function TranscriptView({
       }
       if (!text && images.length === 0) return
       const mentionedAgents = /(?:^|\s)#[\w./-]+/.test(text)
-        ? agents.data ?? await window.revva.inventory.agents(sessionId).catch(() => [])
+        ? agents.data ?? await window.revva.inventory.agents(sessionId).catch(() => {
+          throw new Error('Could not load agent profiles, so this message was not sent. Retry sending to resolve #agent references.')
+        })
         : []
       const refs = extractRefs(text, skills.data ?? [], mentionedAgents)
       const messageKey = [...drive.queryKey, sessionId]
@@ -612,6 +614,7 @@ export function TranscriptView({
         </ScrollArea>
       </div>
 
+      <div className="min-h-0 max-h-[35vh] shrink overflow-y-auto">
       {work && <WorkAgentActivity key={work.id} work={work} />}
       {!readOnly && !hideChildAgents && <ChildAgentActivity key={sessionId} sessionId={sessionId} renderTranscript={(child) => (
         <TranscriptView key={child.sessionId} sessionId={child.sessionId} drive={chatDrive} readOnly hideChildAgents hideSessionDetails
@@ -627,7 +630,7 @@ export function TranscriptView({
       )}
 
       {!readOnly && pending.length > 0 && (
-        <section aria-label="Waiting on you" className="max-h-[40vh] shrink-0 overflow-y-auto border-t bg-muted/30 px-3 py-3 sm:px-6">
+        <section aria-label="Waiting on you" className="border-t bg-muted/30 px-3 py-3 sm:px-6">
           <div className="mx-auto flex max-w-3xl flex-col gap-2">
             <p className="text-xs font-medium text-muted-foreground">Waiting on you ({pending.length})</p>
             {pending.map((item) =>
@@ -640,9 +643,11 @@ export function TranscriptView({
           </div>
         </section>
       )}
+      </div>
 
       {!readOnly && (
         <div className="shrink-0 border-t px-3 py-3 sm:px-6">
+          <div className="max-h-[18vh] overflow-y-auto">
           {work && <WorkFollowUpQueue work={work} running={running} refsForText={async (text) => {
             const [knownSkills, knownAgents] = await Promise.all([
               skills.data ? Promise.resolve(skills.data) : window.revva.inventory.skills(),
@@ -668,6 +673,7 @@ export function TranscriptView({
               ))}
             </div>
           )}
+          </div>
           {send.error instanceof Error && (
             <p role="alert" className="mx-auto mb-2 max-w-3xl text-xs text-destructive">{send.error.message}</p>
           )}

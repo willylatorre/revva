@@ -70,9 +70,9 @@ export function ChildAgentActivity({ sessionId, renderTranscript }: {
     : activity.data?.includes(row.sessionId) ? 'Running'
       : row.outcome === 'failed' ? 'Failed' : row.outcome === 'interrupted' ? 'Stopped' : row.outcome === 'succeeded' ? 'Finished' : 'Ready'
   const rowIcon = (row: AgentSession, label: string): ReactNode => {
-    if (label === 'Running') return <Loader2 className="size-3.5 shrink-0 motion-safe:animate-spin" />
     if (label === 'Needs you' || label === 'Failed') return <CircleAlert className="size-3.5 shrink-0 text-status-warning" />
-    if (waitsOn(row.sessionId).below) return <CircleAlert className="size-3.5 shrink-0 text-status-warning/60" aria-label="A delegated agent below needs you" />
+    if (waitsOn(row.sessionId).below) return <CircleAlert className="size-3.5 shrink-0 text-status-warning" aria-label="A delegated agent below needs you" />
+    if (label === 'Running') return <Loader2 className="size-3.5 shrink-0 motion-safe:animate-spin" />
     return <Bot className="size-3.5 shrink-0" />
   }
 
@@ -121,7 +121,8 @@ export function ChildAgentActivity({ sessionId, renderTranscript }: {
               <p className="text-xs font-medium">Delegated agents</p>
               {descendants.data?.map((row) => {
                 const label = status(row)
-                return <Button key={row.sessionId} type="button" variant="ghost" className="h-auto w-full min-w-0 justify-start px-2 py-2 text-xs" onClick={() => { setPath((current) => [...current, row]); stop.reset() }}>
+                const below = !waitsOn(row.sessionId).self && waitsOn(row.sessionId).below
+                return <Button key={row.sessionId} type="button" variant="ghost" className="h-auto w-full min-w-0 justify-start px-2 py-2 text-xs" aria-label={`${row.title}: ${label}${below ? ' (a delegated agent below needs you)' : ''}. Open agent output`} onClick={() => { setPath((current) => [...current, row]); stop.reset() }}>
                   {rowIcon(row, label)}<span className="min-w-0 flex-1 truncate text-left">{row.title}</span><span className="shrink-0 text-muted-foreground">{label}</span>
                 </Button>
               })}

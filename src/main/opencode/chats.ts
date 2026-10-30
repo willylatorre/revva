@@ -401,7 +401,12 @@ class ChatManager {
     // A ticket/PR chat opens empty; its context rides the first real message only.
     // Cleared before delivery: a failed send keeps the folded text in the user's draft retry, never a double prefix.
     if (chat?.context) {
-      text = `${chat.context}\n\n${text}`
+      const prefix = `${chat.context}\n\n`
+      text = `${prefix}${text}`
+      if (refs) {
+        const shift = <T extends { start: number; end: number }>(ref: T): T => ({ ...ref, start: ref.start + prefix.length, end: ref.end + prefix.length })
+        refs = { ...refs, agents: refs.agents?.map(shift), skills: refs.skills.map(shift), files: refs.files.map(shift) }
+      }
       getDb().prepare('UPDATE chat SET context = NULL WHERE session_id = ?').run(sessionId)
     }
     // Jira and PR links enable the SAME utilities on the SAME conversation.

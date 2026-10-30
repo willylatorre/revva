@@ -7,6 +7,8 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
+- **Safer review and agent mentions** — review blocks if the implementation conversation moved to another checkout; first-message references keep their offsets. Failed agent discovery no longer silently drops mentions, and activity panels share space so the composer stays reachable.
+
 - **Safer delegated review and clearer agent activity** — review waits for the implementation's full agent tree and queued messages, and blocks Revva child follow-ups during review. Nested agent requests appear in the root conversation; open agent status stays current. The checkout review control now describes its setup action, and review handoffs can read chats started in a checkout subdirectory.
 
 - **Agent collaboration recovery and review access** — read-only helpers cannot use unrestricted Code Mode; live background coordinators recover their checkout tools after restart. Ordinary chats can enable review for their current checkout, and agent output can navigate nested delegations. Failed ticket setup retains an actionable work record; queued follow-up edits preserve agent references, and `/new` describes its default-agent behavior accurately.
