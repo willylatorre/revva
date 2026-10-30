@@ -1,4 +1,4 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from 'react'
+import { memo, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronRight } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils'
 import { EMPTY_STREAM, mergeTranscript, streamKey, type LiveTranscript } from '@/lib/transcript-stream'
 import { stabilizeGroups, type TranscriptGroup } from '@/lib/transcript-groups'
 import { MD_COMPONENTS } from '@/components/message-markdown'
+import { AssistantMarkdown } from '@/components/assistant-markdown'
 import type { ChatMessage, ChatToolCall } from '@shared/types'
 
 // Preserve ordinary line breaks in user-written prompts while rendering Markdown.
@@ -148,11 +149,20 @@ export const TranscriptContent = memo(function TranscriptContent({
     previousGroups.current = groups
   }, [groups])
 
-  // Stick-to-bottom: jump instantly (smooth animations restart per token and
-  // fight the user), and only while the user is already at the bottom.
-  useEffect(() => {
-    if (stick.current) bottomRef.current?.scrollIntoView({ block: 'end' })
-  }, [history, live.data, running, groups, stick, bottomRef])
+  // Stick-to-bottom: follow actual layout growth — paced Markdown re-renders
+  // grow the document without any query-data change — and only while the user
+  // is already at the bottom, so a manual scroll-up stays honored.
+  const contentRef = useRef<HTMLDivElement>(null)
+  useLayoutEffect(() => {
+    const content = contentRef.current
+    if (!content) return
+    const follow = (): void => {
+      if (stick.current) bottomRef.current?.scrollIntoView({ block: 'end' })
+    }
+    const observer = new ResizeObserver(follow)
+    observer.observe(content)
+    return () => observer.disconnect()
+  }, [stick, bottomRef])
 
   const activityText = deriveActivity(running, groups)
   // Publish before paint so the footer strip never shows a blank frame, and
@@ -165,7 +175,7 @@ export const TranscriptContent = memo(function TranscriptContent({
   useLayoutEffect(() => () => activity.set(null), [activity])
 
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-4 px-6 pb-5 pt-16">
+    <div ref={contentRef} className="mx-auto flex max-w-3xl flex-col gap-4 px-6 pb-5 pt-16">
       {loading && <Skeleton className="h-16 w-full" />}
       {!loading && !error && rows.length === 0 && !running && (
         <p className="mt-10 text-center text-sm text-muted-foreground">{emptyHint}</p>
@@ -187,25 +197,6 @@ export const TranscriptContent = memo(function TranscriptContent({
 })
 
 /* ---------- turn cards ---------- */
-
-/** Pace Markdown parsing during streaming without delaying the completed message. */
-const RenderedAssistantMarkdown = memo(function RenderedAssistantMarkdown({ text }: { text: string }): React.JSX.Element {
-  return <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{text}</ReactMarkdown>
-})
-
-const AssistantMarkdown = memo(function AssistantMarkdown({ text, streaming }: { text: string; streaming?: boolean }): React.JSX.Element {
-  const latest = useRef(text)
-  const [rendered, setRendered] = useState(text)
-  useEffect(() => {
-    latest.current = text
-  }, [text])
-  useEffect(() => {
-    if (!streaming) return
-    const timer = window.setInterval(() => setRendered(latest.current), 150)
-    return () => window.clearInterval(timer)
-  }, [streaming])
-  return <RenderedAssistantMarkdown text={streaming ? rendered : text} />
-})
 
 /** One agent turn as a single card: thoughts and tool steps collapsed inside,
  *  the answer(s) visible. The step list stays collapsed unless the user opens it.
