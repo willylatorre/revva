@@ -198,7 +198,7 @@ export function TranscriptView({
   emptyHint: string
   /** Hides the composer (reviewer sessions are read-only). */
   readOnly?: boolean
-  /** When set, sending exactly `/new` calls this instead (chats: fresh session, same settings). */
+  /** When set, sending exactly `/new` calls this instead. */
   onNewSession?: () => void
   /** Session details are shown elsewhere for ticket transcripts. */
   hideSessionDetails?: boolean
@@ -370,7 +370,7 @@ export function TranscriptView({
     const items: MenuItem[] = []
     const q = token.query.toLowerCase()
     if (onNewSession && 'new'.startsWith(q)) {
-      items.push({ key: '__new', insert: '/new', hint: 'New session, same settings (fresh context)', run: onNewSession })
+      items.push({ key: '__new', insert: '/new', hint: 'New session with project, model and links; default agent', run: onNewSession })
     }
     for (const s of skillMatches) items.push({ key: s.id, insert: `/${s.id}`, hint: s.description })
     return items.slice(0, 9)
@@ -643,7 +643,13 @@ export function TranscriptView({
 
       {!readOnly && (
         <div className="shrink-0 border-t px-3 py-3 sm:px-6">
-          {work && <WorkFollowUpQueue work={work} running={running} refsForText={(text) => extractRefs(text, skills.data ?? [], agents.data ?? [])} />}
+          {work && <WorkFollowUpQueue work={work} running={running} refsForText={async (text) => {
+            const [knownSkills, knownAgents] = await Promise.all([
+              skills.data ? Promise.resolve(skills.data) : window.revva.inventory.skills(),
+              /(?:^|\s)#[\w./-]+/.test(text) ? (agents.data ? Promise.resolve(agents.data) : window.revva.inventory.agents(sessionId)) : Promise.resolve([])
+            ])
+            return extractRefs(text, knownSkills, knownAgents)
+          }} />}
           {reviewing && <div className="mx-auto mb-2 flex max-w-3xl flex-wrap items-center gap-2">
             <p className="min-w-0 flex-1 text-xs text-muted-foreground">{work?.state === 'FIXING' ? 'Fixing' : 'Review'} in progress. Follow-ups run after this cycle, before shipping.</p>
             <Button type="button" size="xs" variant="outline" disabled={!canSend} onClick={() => send.mutate(true)}>{send.isPending ? 'Sending…' : 'Stop review and send now'}</Button>
@@ -1287,6 +1293,13 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
     retry: false,
     staleTime: Infinity
   })
+  const enableReview = useMutation({
+    mutationFn: () => {
+      if (!chat?.directory) throw new Error('Conversation folder unavailable. Reopen this chat and try again.')
+      return window.revva.work.conversationContext(sessionId, chat.directory)
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['works'] })
+  })
   const ticketKeys = [...new Set([
     ...(works.data ?? []).filter((work) => !!work.ticketKey && work.state !== 'ABANDONED').map((work) => work.ticketKey),
     ...(chats.data ?? []).flatMap((item) => item.ticketKey ? [item.ticketKey] : [])
@@ -1329,6 +1342,7 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
         {attachment.isError && <Button size="sm" variant="outline" onClick={() => void attachment.refetch()}>Retry</Button>}
       </p>}
       {tag.error && <p role="alert" className="shrink-0 border-b px-4 py-2 text-sm text-destructive">{tag.error instanceof Error ? tag.error.message : String(tag.error)}</p>}
+      {enableReview.error && <p role="alert" className="shrink-0 border-b px-4 py-2 text-sm text-destructive">{enableReview.error instanceof Error ? enableReview.error.message : String(enableReview.error)}</p>}
     <TranscriptView
       key={sessionId}
       sessionId={sessionId}
@@ -1373,6 +1387,7 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
             </DropdownMenu>
           )}
           {chatWork && <ConversationActions work={chatWork} />}
+          {chat && !chatWork && !chat.ticketKey && !chat.prUrl && <Button variant="outline" size="sm" className="shrink-0" disabled={enableReview.isPending} onClick={() => enableReview.mutate()}>{enableReview.isPending ? 'Preparing review…' : 'Review this checkout'}</Button>}
           {(chatWork?.prUrl || chat?.prUrl) && (
             <PrConversationActions
               prUrl={chatWork?.prUrl ?? chat?.prUrl}

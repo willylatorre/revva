@@ -7,6 +7,8 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
+- **Agent collaboration recovery and review access** — read-only helpers cannot use unrestricted Code Mode; live background coordinators recover their checkout tools after restart. Ordinary chats can enable review for their current checkout, and agent output can navigate nested delegations. Failed ticket setup retains an actionable work record; queued follow-up edits preserve agent references, and `/new` describes its default-agent behavior accurately.
+
 - **Windows hardening for agent work** — an npm-installed `opencode` (a `.cmd` shim, not an `.exe`) no longer dead-ends with "OpenCode was not found": Revva now resolves it on PATH and launches it through `cmd.exe`, so the service starts where the bare spawn is refused. The Ship checklist gains a **Long paths** warning on Windows (`core.longpaths` off ⇒ git can refuse deep checkouts mid-ship) — shown, never blocking. Inbox notifications now work in Windows dev mode too (AppUserModelID set), stopping a console flash no longer happens when a script is stopped, and keep-awake copy says "machine" instead of "Mac".
 
 - **Coordinator-first chats and agent collaboration** — new chats use the project's default primary agent instead of remembering an agent override. Delegated sessions appear beneath the conversation with status, output, stop controls, and Inbox requests. `#agent-name` references a discovered agent; `@file` remains for files. Authenticated, checkout-scoped runtime tools support agent discovery, conversation reads, bounded read-only helpers, and approved queued messages to peer chats or owned children, without rewriting OpenCode configuration.

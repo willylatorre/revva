@@ -16,12 +16,19 @@ export function ChildAgentActivity({ sessionId, renderTranscript }: {
 }): React.JSX.Element | null {
   const qc = useQueryClient()
   const visible = useTranscriptVisibility()
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [path, setPath] = useState<AgentSession[]>([])
   const trigger = useRef<HTMLButtonElement | null>(null)
   const children = useQuery({
     queryKey: ['session-children', sessionId],
     queryFn: () => window.revva.session.children(sessionId),
     enabled: visible,
+    staleTime: 30_000
+  })
+  const selected = path.at(-1)
+  const descendants = useQuery({
+    queryKey: ['session-children', selected?.sessionId],
+    queryFn: () => window.revva.session.children(selected!.sessionId),
+    enabled: visible && !!selected,
     staleTime: 30_000
   })
   const activity = useQuery({ queryKey: ['session-activity'], queryFn: () => window.revva.session.active(), enabled: false })
@@ -30,7 +37,10 @@ export function ChildAgentActivity({ sessionId, renderTranscript }: {
     if ((event.kind === 'session.children' && (event.sessionId === sessionId || event.sessionId === '*')) || (event.kind === 'chat.idle' && event.sessionId === '*')) {
       void qc.invalidateQueries({ queryKey: ['session-children', sessionId] })
     }
-  }), [qc, sessionId])
+    if (selected && ((event.kind === 'session.children' && (event.sessionId === selected.sessionId || event.sessionId === '*')) || (event.kind === 'chat.idle' && event.sessionId === '*'))) {
+      void qc.invalidateQueries({ queryKey: ['session-children', selected.sessionId] })
+    }
+  }), [qc, sessionId, selected?.sessionId])
   const stop = useMutation({
     mutationFn: (id: string) => window.revva.chat.interrupt(id),
     onSettled: () => {
@@ -39,7 +49,6 @@ export function ChildAgentActivity({ sessionId, renderTranscript }: {
     }
   })
   const rows = children.data ?? []
-  const selected = rows.find((row) => row.sessionId === selectedId)
   const waiting = inbox.filter((item) => rows.some((row) => row.sessionId === item.sessionID))
   const status = (row: AgentSession): string => inbox.some((item) => item.sessionID === row.sessionId) ? 'Needs you'
     : activity.data?.includes(row.sessionId) ? 'Running'
@@ -60,7 +69,7 @@ export function ChildAgentActivity({ sessionId, renderTranscript }: {
             const label = status(row)
             return <Button key={row.sessionId} type="button" variant="ghost" className="h-auto min-w-0 justify-start px-2 py-2 text-xs" aria-label={`${row.title}: ${label}. Open agent output`} onClick={(event) => {
               trigger.current = event.currentTarget
-              setSelectedId(row.sessionId)
+              setPath([row])
             }}>
               {label === 'Running' ? <Loader2 className="size-3.5 shrink-0 motion-safe:animate-spin" /> : label === 'Needs you' || label === 'Failed' ? <CircleAlert className="size-3.5 shrink-0 text-status-warning" /> : <Bot className="size-3.5 shrink-0" />}
               <span className="min-w-0 flex-1 truncate text-left" title={row.title}>{row.title}</span>
@@ -72,17 +81,25 @@ export function ChildAgentActivity({ sessionId, renderTranscript }: {
         {children.isError && <p role="alert" className="py-1 text-xs text-destructive">Could not load agents. <Button size="xs" variant="outline" onClick={() => void children.refetch()}>Retry</Button></p>}
       </CollapsibleContent>
     </Collapsible>
-    <Dialog open={selectedId !== null} onOpenChange={(open) => { if (!open) { setSelectedId(null); stop.reset() } }}>
+    <Dialog open={path.length > 0} onOpenChange={(open) => { if (!open) { setPath([]); stop.reset() } }}>
       <DialogContent className="flex h-[85vh] max-h-[90vh] flex-col overflow-hidden sm:max-w-4xl" onCloseAutoFocus={(event) => { event.preventDefault(); trigger.current?.focus() }}>
         <DialogHeader>
           <DialogTitle>{selected?.title ?? 'Agent output'}</DialogTitle>
           <DialogDescription>{selected ? `${status(selected)}${selected.agentID ? ` · ${selected.agentID}` : ''}. Send follow-ups through the coordinator.` : 'This child session is no longer available.'}</DialogDescription>
         </DialogHeader>
+        {path.length > 1 && <Button type="button" size="sm" variant="ghost" className="self-start" onClick={() => { setPath((current) => current.slice(0, -1)); stop.reset() }}>Back to {path.at(-2)?.title}</Button>}
         {selected && activity.data?.includes(selected.sessionId) && <Button type="button" size="sm" variant="outline" className="self-start" disabled={stop.isPending} onClick={() => stop.mutate(selected.sessionId)}>{stop.isPending ? 'Stopping…' : 'Stop agent'}</Button>}
         {stop.error && <p role="alert" className="text-xs text-destructive">{stop.error.message}</p>}
         {selected && <div className="max-h-[25vh] shrink-0 overflow-y-auto">
           {inbox.filter((item) => item.sessionID === selected.sessionId).map((item) => item.kind === 'form' ? <FormCard key={item.id} item={item} /> : <PermissionCard key={item.id} item={item} />)}
         </div>}
+        {selected && (descendants.data?.length || descendants.isError) ? <section aria-label="Delegated agents" className="max-h-32 shrink-0 overflow-y-auto border-b pb-2">
+          <p className="text-xs font-medium">Delegated agents</p>
+          {descendants.data?.map((row) => <Button key={row.sessionId} type="button" variant="ghost" className="h-auto w-full min-w-0 justify-start px-2 py-2 text-xs" onClick={() => { setPath((current) => [...current, row]); stop.reset() }}>
+            <Bot className="size-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate text-left">{row.title}</span><span className="shrink-0 text-muted-foreground">{status(row)}</span>
+          </Button>)}
+          {descendants.isError && <p role="alert" className="text-xs text-destructive">Could not load delegated agents. <Button size="xs" variant="outline" onClick={() => void descendants.refetch()}>Retry</Button></p>}
+        </section> : null}
         {selected && renderTranscript(selected)}
       </DialogContent>
     </Dialog>

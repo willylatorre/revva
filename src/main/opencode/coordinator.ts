@@ -8,6 +8,7 @@ import { getDb, settingGet, settingSet } from '../db'
 import { pushToWindows } from '../push'
 import { chatManager } from './chats'
 import { agentSessions } from './agent-sessions'
+import { sessionIndex } from './session-index'
 import { openCodeService, describeError } from './service'
 import { skillGuardRules, type SkillGuardRule } from './skill-guard'
 import { collaborationTransport } from './collaboration-transport'
@@ -75,8 +76,39 @@ class Coordinator {
       for (const entry of this.connections.values()) entry.close()
       this.connections.clear()
       // Recover runtime registrations even for background coordinators not on screen.
-      void Promise.allSettled([...this.directories].map((directory) => this.connect(directory)))
+      void this.recoverConnections().catch((error) => console.warn('[coordinator] recovery failed:', describeError(error)))
     })
+  }
+
+  /** Recover checkouts from live indexed sessions, not stale persisted paths. */
+  private async recoverConnections(): Promise<void> {
+    await agentSessions.reconcile().catch((error) => console.warn('[coordinator] agent index recovery failed:', describeError(error)))
+    const active = await openCodeService.api.session.active()
+    const sessions = Object.keys(active).filter((id) => agentSessions.rootOf(id) || reviewTranscriptContext(id))
+    const locations = await Promise.allSettled(sessions.map(async (id) => {
+      const session = await openCodeService.api.session.get({ sessionID: id })
+      await this.restrictHelper(session)
+      const directory = canonical(session.location.directory)
+      const review = reviewTranscriptContext(id)
+      if (review && canonical(review.directory) !== directory) return undefined
+      return directory
+    }))
+    const directories = new Set(this.directories)
+    for (const location of locations) if (location.status === 'fulfilled' && location.value) directories.add(location.value)
+    const connected = await Promise.allSettled([...directories].map((directory) => this.connect(directory)))
+    for (const item of connected) if (item.status === 'rejected') console.warn('[coordinator] checkout recovery failed:', describeError(item.reason))
+    // Previously created idle helpers can be resumed by native delegation too.
+    const idle = sessionIndex.agents().filter((id) => !(id in active))
+    for (let i = 0; i < idle.length; i += 8) {
+      await Promise.allSettled(idle.slice(i, i + 8).map(async (id) => this.restrictHelper(await openCodeService.api.session.get({ sessionID: id }))))
+    }
+  }
+
+  private async restrictHelper(session: SessionInfo): Promise<void> {
+    const meta = session.metadata?.revva
+    if (!meta || typeof meta !== 'object' || Array.isArray(meta) || meta.readOnly !== true) return
+    const permissions = [...(session.permissions ?? []).filter((rule) => rule.action !== 'execute' || rule.resource !== '*'), { action: 'execute', resource: '*', effect: 'deny' as const }]
+    if (JSON.stringify(permissions) !== JSON.stringify(session.permissions)) await openCodeService.api.session.update({ sessionID: session.id, permissions })
   }
 
   /** Install instructions without sending a message or changing the selected agent. */
@@ -281,7 +313,8 @@ class Coordinator {
         const targetId = String(args.sessionId)
         if (targetId === caller.id || targetId === agentSessions.rootOf(caller.id)) throw new Error('Do not message yourself or your coordinator. Return your result normally.')
         this.requireMessageable(targetId, caller.id)
-        await this.target(targetId, directory)
+        const target = await this.target(targetId, directory)
+        await this.restrictHelper(target)
         this.rateLimit(agentSessions.rootOf(caller.id)!)
         const text = `Message from Revva agent ${caller.id} (${caller.title ?? caller.agent ?? 'agent'}):\n\n${String(args.text)}`
         if (agentSessions.get(targetId)) await openCodeService.api.session.prompt({ sessionID: targetId, text, delivery: 'queue' })
@@ -306,7 +339,7 @@ class Coordinator {
           this.rateLimit(root)
           const permissions: SkillGuardRule[] = [
             { action: '*', resource: '*', effect: 'deny' },
-            ...['read', 'glob', 'grep', 'webfetch', 'websearch', 'skill', 'execute', `${this.name}_discover_agents`, `${this.name}_list_conversations`, `${this.name}_read_conversation`].map((action) => ({ action, resource: '*', effect: 'allow' as const })),
+            ...['read', 'glob', 'grep', 'webfetch', 'websearch', 'skill', `${this.name}_discover_agents`, `${this.name}_list_conversations`, `${this.name}_read_conversation`].map((action) => ({ action, resource: '*', effect: 'allow' as const })),
             { action: 'read', resource: '**/.env*', effect: 'ask' },
             ...await skillGuardRules(directory)
           ]

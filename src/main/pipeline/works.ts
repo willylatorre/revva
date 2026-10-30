@@ -433,32 +433,37 @@ class WorkManager {
         now
       )
 
-    // Build session in the worktree.
-    const api = openCodeService.api
-    const guard = await skillGuardRules(worktreeDir)
-    const session = await api.session.create({
-      title: `${ticket.key}: ${ticket.summary}`.slice(0, 100),
-      agent: input.agentID ?? null,
-      model: input.model ? { providerID: input.model.providerID, id: input.model.id } : null,
-      location: { directory: worktreeDir },
-      ...(guard.length ? { permissions: guard } : {}),
-      metadata: { revva: { kind: 'chat', workId: id, ticketKey: ticket.key, phase: 'build', mode: input.mode } }
-    })
-    getDb().prepare('UPDATE work SET session_id = ? WHERE id = ?').run(session.id, id)
-    // A started ticket is also an ordinary conversation with ticket properties.
-    getDb().prepare(`INSERT INTO chat(session_id, title, directory, agent_id, provider_id, model_id, ticket_key, created_at, updated_at)
-      VALUES(?,?,?,?,?,?,?,?,?)`)
-      .run(session.id, `${ticket.key}: ${ticket.summary}`, worktreeDir, input.agentID ?? null, input.model?.providerID ?? null, input.model?.id ?? null, ticket.key, now, now)
-    sessionIndex.register(session.id, 'work')
-    await coordinator.prepare(session.id)
+    try {
+      // Build session in the worktree.
+      const api = openCodeService.api
+      const guard = await skillGuardRules(worktreeDir)
+      const session = await api.session.create({
+        title: `${ticket.key}: ${ticket.summary}`.slice(0, 100),
+        agent: input.agentID ?? null,
+        model: input.model ? { providerID: input.model.providerID, id: input.model.id } : null,
+        location: { directory: worktreeDir },
+        ...(guard.length ? { permissions: guard } : {}),
+        metadata: { revva: { kind: 'chat', workId: id, ticketKey: ticket.key, phase: 'build', mode: input.mode } }
+      })
+      getDb().prepare('UPDATE work SET session_id = ? WHERE id = ?').run(session.id, id)
+      // A started ticket is also an ordinary conversation with ticket properties.
+      getDb().prepare(`INSERT INTO chat(session_id, title, directory, agent_id, provider_id, model_id, ticket_key, created_at, updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?)`)
+        .run(session.id, `${ticket.key}: ${ticket.summary}`, worktreeDir, input.agentID ?? null, input.model?.providerID ?? null, input.model?.id ?? null, ticket.key, now, now)
+      sessionIndex.register(session.id, 'work')
+      await coordinator.prepare(session.id).catch((error) => console.warn('[work] coordinator setup failed:', describeError(error)))
 
-    const prompt = await this.buildPrompt(ticket.key, input)
-    await api.session.prompt({ sessionID: session.id, text: prompt }).catch((err) => {
-      throw new Error(`Session created but first prompt failed: ${describeError(err)}`)
-    })
+      const prompt = await this.buildPrompt(ticket.key, input)
+      await api.session.prompt({ sessionID: session.id, text: prompt }).catch((err) => {
+        throw new Error(`Session created but first prompt failed: ${describeError(err)}`)
+      })
 
-    this.emit(id, state)
-    return this.toSummary(getDb().prepare('SELECT * FROM work WHERE id = ?').get(id) as WorkRow)
+      this.emit(id, state)
+      return this.toSummary(getDb().prepare('SELECT * FROM work WHERE id = ?').get(id) as WorkRow)
+    } catch (error) {
+      this.setState(id, 'WAITING_HUMAN', `Build setup or first prompt failed: ${describeError(error)}. Inspect the conversation and worktree before retrying; the prompt may have been delivered.`)
+      throw new Error(`Build could not be started. The worktree and work record were kept for inspection: ${describeError(error)}`)
+    }
   }
 
   private async buildPrompt(ticketKey: string, input: StartWorkInput): Promise<string> {

@@ -5,7 +5,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import type { PromptRefs, WorkFollowUp, WorkSummary } from '@shared/types'
 
-export function WorkFollowUpQueue({ work, running, refsForText }: { work: WorkSummary; running: boolean; refsForText: (text: string) => PromptRefs }): React.JSX.Element | null {
+export function WorkFollowUpQueue({ work, running, refsForText }: { work: WorkSummary; running: boolean; refsForText: (text: string) => Promise<PromptRefs> }): React.JSX.Element | null {
   const queue = useQuery({ queryKey: ['work-queue', work.id], queryFn: () => window.revva.work.queue(work.id), refetchInterval: 5000 })
   if (queue.isError) return <p role="alert" className="mx-auto mb-2 max-w-3xl text-xs text-destructive">Saved follow-ups unavailable. <Button size="xs" variant="ghost" onClick={() => void queue.refetch()}>Retry</Button></p>
   if (!queue.data?.length) return null
@@ -15,13 +15,13 @@ export function WorkFollowUpQueue({ work, running, refsForText }: { work: WorkSu
   </section>
 }
 
-function FollowUpRow({ item, position, work, running, refsForText }: { item: WorkFollowUp; position: number; work: WorkSummary; running: boolean; refsForText: (text: string) => PromptRefs }): React.JSX.Element {
+function FollowUpRow({ item, position, work, running, refsForText }: { item: WorkFollowUp; position: number; work: WorkSummary; running: boolean; refsForText: (text: string) => Promise<PromptRefs> }): React.JSX.Element {
   const qc = useQueryClient()
   const [editing, setEditing] = useState(false)
   const [text, setText] = useState(item.text)
   const action = useMutation({
     mutationFn: async (kind: 'edit' | 'remove' | 'send') => {
-      if (kind === 'edit') await window.revva.work.editQueued(work.id, item.id, text, refsForText(text))
+      if (kind === 'edit') await window.revva.work.editQueued(work.id, item.id, text, await refsForText(text))
       if (kind === 'remove') await window.revva.work.cancelQueued(work.id, item.id)
       if (kind === 'send') await window.revva.work.sendQueuedNow(work.id, item.id)
     },
