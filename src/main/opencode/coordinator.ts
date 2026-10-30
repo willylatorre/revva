@@ -3,6 +3,7 @@ import type { ClientMcpTool } from '@opencode/client/mcp'
 import type { SessionInfo } from '@opencode/client'
 import { randomBytes } from 'node:crypto'
 import { realpathSync } from 'node:fs'
+import { realpath } from 'node:fs/promises'
 import { z } from 'zod'
 import { getDb, settingGet, settingSet } from '../db'
 import { pushToWindows } from '../push'
@@ -236,8 +237,10 @@ class Coordinator {
 
   /** Two directories count as one scope when git resolves them to the same checkout top level. */
   private async sameCheckout(a: string, b: string): Promise<boolean> {
-    if (a === b) return true
-    const [topA, topB] = await Promise.all([checkoutTopLevel(a).catch(() => undefined), checkoutTopLevel(b).catch(() => undefined)])
+    const [pathA, pathB] = await Promise.all([realpath(a).catch(() => undefined), realpath(b).catch(() => undefined)])
+    if (!pathA || !pathB) return false
+    if (pathA === pathB) return true
+    const [topA, topB] = await Promise.all([checkoutTopLevel(pathA).catch(() => undefined), checkoutTopLevel(pathB).catch(() => undefined)])
     return !!topA && topA === topB
   }
 

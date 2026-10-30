@@ -7,6 +7,8 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
+- **Visible agent requests** — pending conversation requests remain discoverable even when agent activity fills the panel; long agent titles fit the output inspector. Symlinked non-Git folders now share the same collaboration scope.
+
 - **Safer review and agent mentions** — review blocks if the implementation conversation moved to another checkout; first-message references keep their offsets. Failed agent discovery no longer silently drops mentions, and activity panels share space so the composer stays reachable.
 
 - **Safer delegated review and clearer agent activity** — review waits for the implementation's full agent tree and queued messages, and blocks Revva child follow-ups during review. Nested agent requests appear in the root conversation; open agent status stays current. The checkout review control now describes its setup action, and review handoffs can read chats started in a checkout subdirectory.

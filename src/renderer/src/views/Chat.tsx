@@ -322,6 +322,7 @@ export function TranscriptView({
   /** The composer form doubles as the popover portal target for the role pickers. */
   const composerRef = useRef<HTMLFormElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const pendingRef = useRef<HTMLElement>(null)
   const positionedSessionRef = useRef<string | null>(null)
 
   const skills = useQuery({
@@ -614,6 +615,16 @@ export function TranscriptView({
         </ScrollArea>
       </div>
 
+      {!readOnly && pending.length > 0 && (
+        <div className="shrink-0 border-t px-3 sm:px-6" role="status">
+          <div className="mx-auto max-w-3xl">
+            <Button type="button" variant="ghost" size="sm" className="px-0" onClick={() => {
+              pendingRef.current?.scrollIntoView({ block: 'start' })
+              pendingRef.current?.focus({ preventScroll: true })
+            }}>Waiting on you ({pending.length}) · View requests</Button>
+          </div>
+        </div>
+      )}
       <div className="min-h-0 max-h-[35vh] shrink overflow-y-auto">
       {work && <WorkAgentActivity key={work.id} work={work} />}
       {!readOnly && !hideChildAgents && <ChildAgentActivity key={sessionId} sessionId={sessionId} renderTranscript={(child) => (
@@ -630,7 +641,7 @@ export function TranscriptView({
       )}
 
       {!readOnly && pending.length > 0 && (
-        <section aria-label="Waiting on you" className="border-t bg-muted/30 px-3 py-3 sm:px-6">
+        <section ref={pendingRef} tabIndex={-1} aria-label="Waiting on you" className="border-t bg-muted/30 px-3 py-3 sm:px-6">
           <div className="mx-auto flex max-w-3xl flex-col gap-2">
             <p className="text-xs font-medium text-muted-foreground">Waiting on you ({pending.length})</p>
             {pending.map((item) =>

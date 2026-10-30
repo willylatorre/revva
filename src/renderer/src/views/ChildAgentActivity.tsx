@@ -106,11 +106,11 @@ export function ChildAgentActivity({ sessionId, renderTranscript }: {
     </Collapsible>
     <Dialog open={path.length > 0} onOpenChange={(open) => { if (!open) { setPath([]); stop.reset() } }}>
       <DialogContent className="flex h-[85vh] max-h-[90vh] flex-col overflow-hidden sm:max-w-4xl" onCloseAutoFocus={(event) => { event.preventDefault(); trigger.current?.focus() }}>
-        <DialogHeader>
-          <DialogTitle>{selected?.title ?? 'Agent output'}</DialogTitle>
-          <DialogDescription>{selected ? `${status(selected)}${selected.agentID ? ` · ${selected.agentID}` : ''}. Send follow-ups through the coordinator.` : 'This child session is no longer available.'}</DialogDescription>
+        <DialogHeader className="min-w-0 shrink-0 pr-6">
+          <DialogTitle className="truncate" title={selected?.title}>{selected?.title ?? 'Agent output'}</DialogTitle>
+          <DialogDescription className="break-words">{selected ? `${status(selected)}${selected.agentID ? ` · ${selected.agentID}` : ''}. Send follow-ups through the coordinator.` : 'This child session is no longer available.'}</DialogDescription>
         </DialogHeader>
-        {path.length > 1 && <Button type="button" size="sm" variant="ghost" className="self-start shrink-0" onClick={() => { setPath((current) => current.slice(0, -1)); stop.reset() }}>Back to {path.at(-2)?.title}</Button>}
+        {path.length > 1 && <Button type="button" size="sm" variant="ghost" className="max-w-full self-start shrink-0" title={`Back to ${path.at(-2)?.title}`} onClick={() => { setPath((current) => current.slice(0, -1)); stop.reset() }}><span className="truncate">Back to {path.at(-2)?.title}</span></Button>}
         {selected && activity.data?.includes(selected.sessionId) && <Button type="button" size="sm" variant="outline" className="self-start shrink-0" disabled={stop.isPending} onClick={() => stop.mutate(selected.sessionId)}>{stop.isPending ? 'Stopping…' : 'Stop agent'}</Button>}
         {stop.error && <p role="alert" className="text-xs text-destructive shrink-0">{stop.error.message}</p>}
         {/* Requests and descendants share one shrinkable band, so the transcript below always keeps its reserved space. */}
