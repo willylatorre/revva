@@ -88,5 +88,5 @@ sh('git', ['tag', tag])
 sh('git', ['push', 'origin', 'main', tag])
 
 console.log(`\n${tag} pushed. GitHub Actions is now building the installer:`)
-console.log('  https://github.com/adrian-revvity/revva/actions')
-console.log(`Downloads will land on:\n  https://github.com/adrian-revvity/revva/releases/tag/${tag}`)
+console.log('  https://github.com/RevvitySignals/revva/actions')
+console.log(`Downloads will land on:\n  https://github.com/RevvitySignals/revva/releases/tag/${tag}`)

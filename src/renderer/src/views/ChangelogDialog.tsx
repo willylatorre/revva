@@ -62,7 +62,7 @@ export function ChangelogDialogButton(): React.JSX.Element {
             variant="outline"
             size="sm"
             className="self-start"
-            onClick={() => void window.revva.shell.openExternal('https://github.com/adrian-revvity/revva/releases')}
+            onClick={() => void window.revva.shell.openExternal('https://github.com/RevvitySignals/revva/releases')}
           >
             Browse downloads on GitHub
           </Button>
