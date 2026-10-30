@@ -31,6 +31,7 @@ export const IPC = {
   sessionModel: 'revva:session:model',
   sessionSetModel: 'revva:session:set-model',
   sessionAgent: 'revva:session:agent',
+  sessionChildren: 'revva:session:children',
   sessionSetAgent: 'revva:session:set-agent',
   sessionCopyId: 'revva:session:copy-id',
   sessionContextUsage: 'revva:session:context-usage',

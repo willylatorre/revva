@@ -39,7 +39,8 @@ import {
   type WorkFollowUp,
   type WorkSummary
 } from '@shared/types'
-import { fileAttachments, skillAttachments } from '../opencode/prompt-refs'
+import { agentAttachments, fileAttachments, skillAttachments } from '../opencode/prompt-refs'
+import { coordinator } from '../opencode/coordinator'
 import { skillGuardRules } from '../opencode/skill-guard'
 
 const exec = promisify(execFile)
@@ -152,7 +153,7 @@ class WorkManager {
       { ticket_key: string | null; directory: string; pr_url: string | null } | undefined
     if (!chat) throw new Error('Conversation not found.')
     const existing = this.workBySession(sessionId)
-    if (!chat.ticket_key && !chat.pr_url && (!existing || existing.state === 'ABANDONED')) throw new Error('Link this conversation to a Jira ticket or PR to enable its review utilities.')
+    if (!chat.ticket_key && !chat.pr_url && (!existing || existing.state === 'ABANDONED') && !directory) throw new Error('Link this conversation to a Jira ticket or PR, or explicitly choose its review checkout, to enable review utilities.')
     if (existing && existing.state !== 'ABANDONED' && !directory) {
       sessionIndex.register(sessionId, 'work')
       // The row may have anchored before its folder became a checkout ("Chat with
@@ -449,6 +450,7 @@ class WorkManager {
       VALUES(?,?,?,?,?,?,?,?,?)`)
       .run(session.id, `${ticket.key}: ${ticket.summary}`, worktreeDir, input.agentID ?? null, input.model?.providerID ?? null, input.model?.id ?? null, ticket.key, now, now)
     sessionIndex.register(session.id, 'work')
+    await coordinator.prepare(session.id)
 
     const prompt = await this.buildPrompt(ticket.key, input)
     await api.session.prompt({ sessionID: session.id, text: prompt }).catch((err) => {
@@ -1043,6 +1045,7 @@ class WorkManager {
     }
     const files = [...promptImageFiles(images), ...(refs && work ? fileAttachments(refs, work.worktree_dir) : [])]
     const skills = refs ? skillAttachments(refs) : []
+    const agents = refs ? agentAttachments(refs) : []
     const payload = {
       sessionID: sessionId,
       text: work && !work.pr_url && (work.owns_worktree !== 0 || reReview || work.review_after_followup)
@@ -1050,6 +1053,7 @@ class WorkManager {
         : text,
       ...(files.length ? { files } : {}),
       ...(skills.length ? { skills } : {}),
+      ...(agents.length ? { agents } : {}),
       delivery: (queued ? 'queue' : 'steer') as 'queue' | 'steer'
     }
     try {

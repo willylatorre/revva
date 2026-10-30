@@ -10,6 +10,8 @@ import { IPC, settingsKeySchema, chatCreateInputSchema, modelRefSchema, type Wor
 import { keepAwake } from './keep-awake'
 import { openCodeService } from './opencode/service'
 import { chatManager } from './opencode/chats'
+import { agentSessions } from './opencode/agent-sessions'
+import { coordinator } from './opencode/coordinator'
 import { throughputMeter } from './opencode/throughput'
 import { transcriptSubscriptions } from './opencode/transcript-subscriptions'
 import { transcriptRequests, compactLatestAnswer, invalidateLatestAnswers, recordExecutionStart } from './opencode/transcript-requests'
@@ -139,7 +141,10 @@ export function registerIpc(): void {
   })
 
   /* ---------- inventory ---------- */
-  ipcMain.handle(IPC.inventoryAgents, () => listAgents())
+  ipcMain.handle(IPC.inventoryAgents, async (_e, sessionId: unknown) => {
+    const session = sessionId === undefined ? undefined : await sessionMetadata(id(sessionId))
+    return listAgents(session?.location.directory)
+  })
   ipcMain.handle(IPC.inventoryModels, () => listModels())
   ipcMain.handle(IPC.inventorySkills, () => listSkills())
 
@@ -226,6 +231,11 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.chatList, () => chatManager.list())
   ipcMain.handle(IPC.chatCreate, (_e, input: unknown) => chatManager.create(chatCreateInputSchema.parse(input)))
   ipcMain.handle(IPC.chatMessages, history)
+  ipcMain.handle(IPC.sessionChildren, async (_e, sessionId: unknown) => {
+    const session = id(sessionId)
+    await coordinator.prepare(session)
+    return agentSessions.children(session)
+  })
   ipcMain.handle(IPC.chatPrompt, (_e, sessionId: string, text: string, images?: unknown, queued?: unknown, refs?: unknown, sentAt?: unknown) =>
     throughputMeter.measurePrompt(String(sessionId), sentAt, () =>
       chatManager.prompt(String(sessionId), String(text), promptImageList(images), Boolean(queued), promptRefs(refs)))
@@ -269,6 +279,9 @@ export function registerIpc(): void {
   })
   ipcMain.handle(IPC.sessionSetAgent, async (_e, sessionId: string, agentID: unknown) => {
     const agent = z.string().min(1).max(200).parse(agentID)
+    const session = await sessionMetadata(String(sessionId))
+    const profile = await openCodeService.api.agent.get({ agentID: agent, location: session.location })
+    if (profile.data.hidden || profile.data.mode === 'subagent') throw new Error('Subagents cannot be selected as the primary coordinator.')
     await openCodeService.api.session.switchAgent({ sessionID: String(sessionId), agent })
     getDb().prepare('UPDATE chat SET agent_id = ? WHERE session_id = ?').run(agent, String(sessionId))
   })

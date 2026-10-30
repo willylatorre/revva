@@ -12,7 +12,7 @@ const api: RevvaApi = {
     reconnect: (server, directory) => ipcRenderer.invoke(IPC.mcpReconnect, server, directory)
   },
   inventory: {
-    agents: () => ipcRenderer.invoke(IPC.inventoryAgents),
+    agents: (sessionId) => ipcRenderer.invoke(IPC.inventoryAgents, sessionId),
     models: () => ipcRenderer.invoke(IPC.inventoryModels),
     skills: () => ipcRenderer.invoke(IPC.inventorySkills)
   },
@@ -49,6 +49,7 @@ const api: RevvaApi = {
     remove: (sessionId) => ipcRenderer.invoke(IPC.chatDelete, sessionId)
   },
   session: {
+    children: (sessionId) => ipcRenderer.invoke(IPC.sessionChildren, sessionId),
     subscribe: (sessionId, token) => ipcRenderer.invoke(IPC.transcriptSubscribe, sessionId, token),
     unsubscribe: (token) => ipcRenderer.invoke(IPC.transcriptUnsubscribe, token),
     cancelRequest: (requestId) => ipcRenderer.invoke(IPC.transcriptCancel, requestId),

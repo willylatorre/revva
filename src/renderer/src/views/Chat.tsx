@@ -20,12 +20,13 @@ import { transcriptRequest } from '@/lib/transcript-requests'
 import { SessionStats } from '@/components/session-stats'
 import { MD_COMPONENTS } from '@/components/message-markdown'
 import { Choice } from './NewChatDialog'
-import type { ChatMessage, ChatToolCall, FileHit, ModelRef, PromptImage, PromptRefs, QueuedMessage, SkillInfo, WorkSummary, TranscriptPage } from '@shared/types'
+import type { AgentInfo, ChatMessage, ChatToolCall, FileHit, ModelRef, PromptImage, PromptRefs, QueuedMessage, SkillInfo, WorkSummary, TranscriptPage } from '@shared/types'
 import { FormCard, PermissionCard, useInbox } from './InboxView'
 import { PrConversationActions } from './PrConversationActions'
 import { ConversationEnvironment, ConversationActions, ConversationDetails } from './ConversationEnvironment'
 import { WorkAgentActivity } from './WorkAgentActivity'
 import { WorkFollowUpQueue } from './WorkFollowUpQueue'
+import { ChildAgentActivity } from './ChildAgentActivity'
 
 const IMAGE_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp'
 const MAX_IMAGES = 8
@@ -56,17 +57,22 @@ const USER_BUBBLE_MD_COMPONENTS: typeof MD_COMPONENTS = {
   )
 }
 
-/* ---------- composer tokens: /skill and @file ---------- */
+/* ---------- composer tokens: /skill, @file and #agent ---------- */
 
 /** Which token the caret sits in right now (drives the autocomplete menu). */
 interface ActiveToken {
-  kind: 'skill' | 'file'
+  kind: 'skill' | 'file' | 'agent'
   query: string
   /** Index of the sigil in the input value. */
   start: number
 }
 function activeToken(value: string, caret: number): ActiveToken | null {
   const before = value.slice(0, caret)
+  const agent = before.match(/(?:^|\s)#([\w./-]*)$/)
+  if (agent) {
+    const query = agent[1] ?? ''
+    return { kind: 'agent', query, start: caret - query.length - 1 }
+  }
   const skill = before.match(/(?:^|\s)\/([\w.:-]*)$/)
   if (skill) {
     const query = skill[1] ?? ''
@@ -81,13 +87,22 @@ function activeToken(value: string, caret: number): ActiveToken | null {
 }
 
 /** Tokenize the final text into OpenCode prompt refs (offsets are UTF-16 indices into text). */
-function extractRefs(text: string, skills: SkillInfo[]): PromptRefs {
+function extractRefs(text: string, skills: SkillInfo[], agents: AgentInfo[] = []): PromptRefs {
   const byToken = new Map<string, SkillInfo>()
   for (const s of skills) {
     byToken.set(s.id.toLowerCase(), s)
     if (s.name) byToken.set(s.name.toLowerCase().replace(/\s+/g, '-'), s)
   }
   const refs: PromptRefs = { skills: [], files: [] }
+  const byAgent = new Map(agents.map((agent) => [agent.id.toLowerCase(), agent]))
+  for (const match of text.matchAll(/(?:^|\s)(#[\w./-]+)/g)) {
+    const token = match[1] ?? ''
+    const agent = byAgent.get(token.slice(1).toLowerCase())
+    if (!agent || (refs.agents?.length ?? 0) >= 8) continue
+    const start = (match.index ?? 0) + match[0].lastIndexOf(token)
+    refs.agents ??= []
+    refs.agents.push({ id: agent.id, start, end: start + token.length, text: token })
+  }
   for (const m of text.matchAll(/(?:^|\s)(\/[\w.:-]+)/g)) {
     const token = m[1] ?? ''
     const s = byToken.get(token.slice(1).toLowerCase())
@@ -174,6 +189,7 @@ export function TranscriptView({
   readOnly,
   onNewSession,
   hideSessionDetails,
+  hideChildAgents,
   work
 }: {
   sessionId: string
@@ -186,6 +202,8 @@ export function TranscriptView({
   onNewSession?: () => void
   /** Session details are shown elsewhere for ticket transcripts. */
   hideSessionDetails?: boolean
+  /** Prevent nested child-output inspectors from recursively mounting themselves. */
+  hideChildAgents?: boolean
   work?: WorkSummary
 }): React.JSX.Element {
   const qc = useQueryClient()
@@ -296,7 +314,7 @@ export function TranscriptView({
 
   /** Images staged in the composer, waiting to be sent with the next message. */
   const [pendingImages, setPendingImages] = useState<PromptImage[]>([])
-  /** Token under the caret (drives the /skill @file menu) and the highlighted row. */
+  /** Token under the caret (drives /skill, @file and #agent menus). */
   const [token, setToken] = useState<ActiveToken | null>(null)
   const [tokenIndex, setTokenIndex] = useState(0)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -311,6 +329,10 @@ export function TranscriptView({
     queryFn: () => window.revva.inventory.skills(),
     staleTime: 5 * 60_000,
     enabled: !readOnly
+  })
+  const agents = useQuery({
+    queryKey: ['agents', sessionId], queryFn: () => window.revva.inventory.agents(sessionId),
+    staleTime: 60_000, enabled: !readOnly && token?.kind === 'agent'
   })
   const skillMatches = useMemo(() => {
     if (!token || token.kind !== 'skill') return []
@@ -334,6 +356,11 @@ export function TranscriptView({
   }
   const menuList: MenuItem[] = useMemo(() => {
     if (!token) return []
+    if (token.kind === 'agent') {
+      const q = token.query.toLowerCase()
+      return (agents.data ?? []).filter((agent) => `${agent.id} ${agent.name ?? ''}`.toLowerCase().includes(q)).slice(0, 8)
+        .map((agent) => ({ key: agent.id, insert: `#${agent.id}`, hint: agent.description ?? agent.mode }))
+    }
     if (token.kind === 'file') {
       return fileMatches.map((f) => ({
         key: f.path,
@@ -347,7 +374,7 @@ export function TranscriptView({
     }
     for (const s of skillMatches) items.push({ key: s.id, insert: `/${s.id}`, hint: s.description })
     return items.slice(0, 9)
-  }, [token, skillMatches, fileMatches, onNewSession])
+  }, [token, skillMatches, fileMatches, agents.data, onNewSession])
   const menuItems = menuList.length
 
   useEffect(() => {
@@ -455,7 +482,10 @@ export function TranscriptView({
         return
       }
       if (!text && images.length === 0) return
-      const refs = extractRefs(text, skills.data ?? [])
+      const mentionedAgents = /(?:^|\s)#[\w./-]+/.test(text)
+        ? agents.data ?? await window.revva.inventory.agents(sessionId).catch(() => [])
+        : []
+      const refs = extractRefs(text, skills.data ?? [], mentionedAgents)
       const messageKey = [...drive.queryKey, sessionId]
       const optimisticId = `pending-${crypto.randomUUID()}`
       if (!running && (!reviewing || stopReview)) {
@@ -583,6 +613,10 @@ export function TranscriptView({
       </div>
 
       {work && <WorkAgentActivity key={work.id} work={work} />}
+      {!readOnly && !hideChildAgents && <ChildAgentActivity key={sessionId} sessionId={sessionId} renderTranscript={(child) => (
+        <TranscriptView key={child.sessionId} sessionId={child.sessionId} drive={chatDrive} readOnly hideChildAgents hideSessionDetails
+          emptyHint="This agent has not produced output yet." header={<><span className="min-w-0 flex-1 truncate text-xs">Agent output</span><SessionIdButton sessionId={child.sessionId} /></>} />
+      )} />}
       {running && !reviewing && (
         <div className="shrink-0 px-3 py-1.5 sm:px-6" role="status" aria-live="polite">
           <div className="mx-auto flex max-w-3xl items-center gap-2 overflow-hidden">
@@ -609,7 +643,7 @@ export function TranscriptView({
 
       {!readOnly && (
         <div className="shrink-0 border-t px-3 py-3 sm:px-6">
-          {work && <WorkFollowUpQueue work={work} running={running} refsForText={(text) => extractRefs(text, skills.data ?? [])} />}
+          {work && <WorkFollowUpQueue work={work} running={running} refsForText={(text) => extractRefs(text, skills.data ?? [], agents.data ?? [])} />}
           {reviewing && <div className="mx-auto mb-2 flex max-w-3xl flex-wrap items-center gap-2">
             <p className="min-w-0 flex-1 text-xs text-muted-foreground">{work?.state === 'FIXING' ? 'Fixing' : 'Review'} in progress. Follow-ups run after this cycle, before shipping.</p>
             <Button type="button" size="xs" variant="outline" disabled={!canSend} onClick={() => send.mutate(true)}>{send.isPending ? 'Sending…' : 'Stop review and send now'}</Button>
@@ -654,7 +688,7 @@ export function TranscriptView({
             {token && menuItems > 0 && (
               <div className="absolute bottom-full left-0 z-10 mb-2 flex w-80 max-w-full flex-col overflow-hidden rounded-md border bg-popover text-popover-foreground shadow-md">
                 <div className="border-b px-2.5 py-1 text-[10px] text-muted-foreground">
-                  {token.kind === 'skill' ? 'Commands — Enter/Tab to insert' : 'Files — Enter/Tab to insert'}
+                  {token.kind === 'skill' ? 'Commands — Enter/Tab to insert' : token.kind === 'agent' ? 'Agents — Enter/Tab to reference' : 'Files — Enter/Tab to insert'}
                 </div>
                 {menuList.map((item, i) => (
                   <button
@@ -734,7 +768,7 @@ export function TranscriptView({
                     ? 'Queue a follow-up for after review/fixing…'
                     : running
                     ? 'Running — send to queue your message…'
-                    : 'Message…'
+                    : 'Message… @file attaches a file; #agent references a specialist.'
                 }
                 aria-label="Message"
                 rows={2}
@@ -1072,7 +1106,7 @@ function ComposerRolePickers({ sessionId, container }: {
   const [modelOpen, setModelOpen] = useState(false)
   const [agentOpen, setAgentOpen] = useState(false)
   const [search, setSearch] = useState('')
-  const agents = useQuery({ queryKey: ['agents'], queryFn: () => window.revva.inventory.agents(), staleTime: 60_000, enabled: agentOpen })
+  const agents = useQuery({ queryKey: ['agents', sessionId], queryFn: () => window.revva.inventory.agents(sessionId), staleTime: 60_000, enabled: agentOpen })
   const models = useQuery({ queryKey: ['models'], queryFn: () => window.revva.inventory.models(), staleTime: 60_000, enabled: modelOpen })
   const model = useQuery({ queryKey: ['session-model', sessionId], queryFn: () => window.revva.session.model(sessionId) })
   const agent = useQuery({ queryKey: ['session-agent', sessionId], queryFn: () => window.revva.session.agent(sessionId) })
@@ -1091,7 +1125,7 @@ function ComposerRolePickers({ sessionId, container }: {
     : 'Model: default'
   const currentAgent = agent.data
     ? agents.data?.find((a) => a.id === agent.data)?.name || agent.data
-    : 'Agent: default'
+    : 'Coordinator: default'
   const effortVariants = model.data?.variants ?? []
   const currentEffort = model.data?.variant && effortVariants.includes(model.data.variant)
     ? model.data.variant
@@ -1115,7 +1149,7 @@ function ComposerRolePickers({ sessionId, container }: {
       />
     )
   }
-  const agentMatches = (agents.data ?? []).filter((a) => !q || `${a.name ?? ''} ${a.id}`.toLowerCase().includes(q))
+  const agentMatches = (agents.data ?? []).filter((a) => a.mode !== 'subagent' && (!q || `${a.name ?? ''} ${a.id}`.toLowerCase().includes(q)))
   const busy = switchModel.isPending || switchAgent.isPending
 
   return (
@@ -1153,14 +1187,14 @@ function ComposerRolePickers({ sessionId, container }: {
       </Popover>
       <Popover open={agentOpen} onOpenChange={(next) => { setAgentOpen(next); if (!next) setSearch('') }}>
         <PopoverTrigger
-          render={<Button type="button" size="xs" variant="ghost" className="min-w-0 max-w-40" aria-label="Switch agent for this conversation" disabled={busy} />}
+          render={<Button type="button" size="xs" variant="ghost" className="min-w-0 max-w-40" aria-label="Switch coordinator for this conversation" disabled={busy} />}
         >
           <Bot data-icon="inline-start" />
           <span className="truncate">{currentAgent}</span>
           <ChevronDown data-icon="inline-end" />
         </PopoverTrigger>
         <PopoverContent container={container} align="start" className="w-72 max-w-[calc(100vw-2rem)] gap-2 p-3">
-          <PopoverTitle>Switch agent</PopoverTitle>
+          <PopoverTitle>Switch coordinator</PopoverTitle>
           <p className="text-[11px] text-muted-foreground">Applies to the next turn; this conversation keeps its history.</p>
           <Input aria-label="Search agents" placeholder="Search agents…" value={search} onChange={(e) => setSearch(e.target.value)} className="h-7 text-xs" />
           <div className="max-h-64 overflow-y-auto">
@@ -1272,13 +1306,12 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
     if (!key) return
     tag.mutate(key, { onSuccess: () => setCustomTicket('') })
   }
-  /** `/new` — fresh context: a new session with this chat's directory/agent/model/links. */
+  /** `/new` — fresh coordinator context, retaining the project/model/links. */
   const newSession = (): void => {
     if (!chat || !onOpenChat) return
     void window.revva.chat
       .create({
         directory: chat.directory,
-        agentID: chat.agentID,
         model: chat.providerID && chat.modelID ? { providerID: chat.providerID, id: chat.modelID } : undefined,
         ticketKey: chat.ticketKey,
         prUrl: chat.prUrl

@@ -187,6 +187,7 @@ class InboxManager extends EventEmitter {
       .all() as Array<{ session_id: string }>
     const reviews = db.prepare("SELECT session_id FROM review WHERE session_id IS NOT NULL AND status = 'running'").all() as Array<{ session_id: string }>
     return [...new Set([...chats, ...works, ...reviews].map((r) => r.session_id).filter((id) => !!id && this.isKnown(id)))]
+      .concat(sessionIndex.agents())
   }
 
   private directoryCache = new Map<string, string>()
@@ -197,6 +198,7 @@ class InboxManager extends EventEmitter {
     const row =
       (getDb().prepare('SELECT directory FROM chat WHERE session_id = ?').get(sessionID) as { directory: string } | undefined) ??
       (getDb().prepare('SELECT worktree_dir AS directory FROM work WHERE session_id = ?').get(sessionID) as { directory: string } | undefined) ??
+      (getDb().prepare('SELECT directory FROM agent_session WHERE session_id = ?').get(sessionID) as { directory: string } | undefined) ??
       (getDb().prepare('SELECT w.worktree_dir AS directory FROM review r JOIN work w ON w.id = r.work_id WHERE r.session_id = ?').get(sessionID) as { directory: string } | undefined)
     const dir = row?.directory ?? ''
     if (dir) this.directoryCache.set(sessionID, dir)
@@ -211,6 +213,8 @@ class InboxManager extends EventEmitter {
     if (work) return work.ticket_key
     const review = getDb().prepare('SELECT w.ticket_key, r.role FROM review r JOIN work w ON w.id = r.work_id WHERE r.session_id = ?').get(sessionID) as { ticket_key: string; role: string } | undefined
     if (review) return `${review.ticket_key} · ${review.role} review`
+    const child = getDb().prepare('SELECT title FROM agent_session WHERE session_id = ?').get(sessionID) as { title: string } | undefined
+    if (child) return child.title
     return sessionID
   }
 

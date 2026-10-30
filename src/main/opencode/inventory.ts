@@ -8,8 +8,8 @@ import { favoriteModels } from '../db'
 import type { AgentInfo, ModelInfo, SkillInfo } from '@shared/types'
 import { performanceMeter } from './performance'
 
-export async function listAgents(): Promise<AgentInfo[]> {
-  const res = await openCodeService.api.agent.list({})
+export async function listAgents(directory?: string): Promise<AgentInfo[]> {
+  const res = await openCodeService.api.agent.list(directory ? { location: { directory } } : {})
   return res.data
     .filter((a) => !a.hidden)
     .map((a) => ({ id: a.id, name: a.name, description: a.description, mode: a.mode }))

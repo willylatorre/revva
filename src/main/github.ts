@@ -752,7 +752,6 @@ class GitHubManager {
     const chat = await chatManager.create({
       directory,
       title: `${ticketKey ?? `${pr.repo}#${pr.number}`} · PR #${pr.number} chat`.slice(0, 80),
-      agentID: generalSelection?.agentID,
       model: generalSelection?.model,
       ticketKey,
       prUrl: pr.url,

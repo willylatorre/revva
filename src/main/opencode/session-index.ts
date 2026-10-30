@@ -5,7 +5,7 @@
  */
 import { getDb } from '../db'
 
-type SessionKind = 'chat' | 'work' | 'review'
+type SessionKind = 'chat' | 'work' | 'review' | 'agent'
 
 class SessionIndex {
   private kinds = new Map<string, SessionKind>()
@@ -20,6 +20,10 @@ class SessionIndex {
     return this.kinds.get(sessionId)
   }
 
+  agents(): string[] {
+    return [...this.kinds].filter(([, kind]) => kind === 'agent').map(([id]) => id)
+  }
+
   /** Rebuild from sqlite (boot / safety net). Work rows key on session_id. */
   rebuild(): void {
     this.kinds.clear()
@@ -29,6 +33,9 @@ class SessionIndex {
     }
     for (const row of db.prepare('SELECT session_id FROM work WHERE session_id IS NOT NULL').all() as Array<{ session_id: string }>) {
       this.kinds.set(row.session_id, 'work')
+    }
+    for (const row of db.prepare('SELECT session_id FROM agent_session').all() as Array<{ session_id: string }>) {
+      this.kinds.set(row.session_id, 'agent')
     }
   }
 }

@@ -126,6 +126,17 @@ export const chatCreateInputSchema = z.object({
 })
 export type ChatCreateInput = z.infer<typeof chatCreateInputSchema>
 
+export interface AgentSession {
+  sessionId: string
+  parentId: string
+  rootId: string
+  title: string
+  directory: string
+  agentID?: string
+  outcome?: 'succeeded' | 'failed' | 'interrupted'
+  updatedAt: number
+}
+
 export type ChatRole = 'user' | 'assistant' | 'system' | 'tool'
 
 /** One transcript image: a local attachment URL, or an optimistic base64 data URL. */
@@ -347,8 +358,9 @@ export const fileHitSchema = z.object({
 })
 export type FileHit = z.infer<typeof fileHitSchema>
 
-/** A skill or file the composer tokenized out of the message text (`/skill`, `@file`). */
+/** Composer references tokenized from `/skill`, `@file` and `#agent`. */
 export const promptRefsSchema = z.object({
+  agents: z.array(z.object({ id: z.string().max(200), start: z.number().int(), end: z.number().int(), text: z.string().max(300) })).max(8).optional(),
   skills: z
     .array(z.object({ id: z.string(), name: z.string(), start: z.number().int(), end: z.number().int(), text: z.string() }))
     .max(8)
@@ -809,6 +821,7 @@ export const pushEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('session.queue'), sessionId: z.string() }),
   z.object({ kind: z.literal('session.model'), sessionId: z.string() }),
   z.object({ kind: z.literal('session.agent'), sessionId: z.string() }),
+  z.object({ kind: z.literal('session.children'), sessionId: z.string() }),
   z.object({ kind: z.literal('session.activity'), sessionId: z.string(), running: z.boolean() }),
   z.object({ kind: z.literal('session.transcript'), sessionId: z.string(), reset: z.boolean().optional() }),
   /** Output tokens / elapsed time since Send; frozen when the interaction ends. */
@@ -843,7 +856,7 @@ export interface RevvaApi {
     reconnect(server: string, directory?: string): Promise<void>
   }
   inventory: {
-    agents(): Promise<AgentInfo[]>
+    agents(sessionId?: string): Promise<AgentInfo[]>
     models(): Promise<ModelInfo[]>
     skills(): Promise<SkillInfo[]>
   }
@@ -885,6 +898,7 @@ export interface RevvaApi {
     remove(sessionId: string): Promise<void>
   }
   session: {
+    children(sessionId: string): Promise<AgentSession[]>
     subscribe(sessionId: string, token: string): Promise<TranscriptAttachment>
     unsubscribe(token: string): Promise<void>
     cancelRequest(requestId: string): Promise<void>

@@ -15,6 +15,8 @@ import { jiraAuth } from './jira/auth'
 import { jiraMcp } from './jira/mcp'
 import { commentWatcher } from './jira/watch'
 import { sessionIndex } from './opencode/session-index'
+import { agentSessions } from './opencode/agent-sessions'
+import { coordinator } from './opencode/coordinator'
 import { throughputMeter } from './opencode/throughput'
 import { wireSessionMetrics } from './opencode/session-metrics'
 import { handleTranscriptImages, registerImageScheme } from './opencode/transcript-images'
@@ -68,6 +70,8 @@ app.whenReady().then(() => {
   createWindow()
 
   eventBus.start()
+  agentSessions.wire()
+  coordinator.wire()
   chatManager.wire()
   throughputMeter.wire()
   wireSessionMetrics()
@@ -94,8 +98,13 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', () => {
+let quitting = false
+app.on('before-quit', (event) => {
+  if (quitting) return
+  quitting = true
+  event.preventDefault()
   eventBus.stop()
   openCodeService.dispose()
   // Running scripts (e.g. a user's proxy) are intentionally left alive.
+  void coordinator.dispose().finally(() => app.quit())
 })

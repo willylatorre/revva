@@ -9,7 +9,9 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 - **Windows hardening for agent work** — an npm-installed `opencode` (a `.cmd` shim, not an `.exe`) no longer dead-ends with "OpenCode was not found": Revva now resolves it on PATH and launches it through `cmd.exe`, so the service starts where the bare spawn is refused. The Ship checklist gains a **Long paths** warning on Windows (`core.longpaths` off ⇒ git can refuse deep checkouts mid-ship) — shown, never blocking. Inbox notifications now work in Windows dev mode too (AppUserModelID set), stopping a console flash no longer happens when a script is stopped, and keep-awake copy says "machine" instead of "Mac".
 
-- (nothing yet)
+- **Coordinator-first chats and agent collaboration** — new chats use the project's default primary agent instead of remembering an agent override. Delegated sessions appear beneath the conversation with status, output, stop controls, and Inbox requests. `#agent-name` references a discovered agent; `@file` remains for files. Authenticated, checkout-scoped runtime tools support agent discovery, conversation reads, bounded read-only helpers, and approved queued messages to peer chats or owned children, without rewriting OpenCode configuration.
+- **Scoped review handoffs** — fixers can inspect completed reviewer threads from their round, and re-reviewers can inspect their own previous review and the intervening fixer report. Review agents also get implementation context. Same-round reviewers stay independent; unrelated tickets, old cycles, messaging and launches stay blocked. The single-fixer, bounded-round approval workflow is unchanged.
+- **Review a feature branch without a fake ticket** — explicitly selecting a review checkout can attach review utilities to an ordinary conversation without a Jira/PR link. Test-audit reviewers now follow the target repository's verification policy instead of demanding automated tests the repository explicitly forbids.
 
 ## [1.2.1] - 2026-10-30
 

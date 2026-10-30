@@ -17,13 +17,15 @@ import { sessionIndex } from './session-index'
 import { parsePrRef, repoFromGitRemote, resolvePrRef } from '@shared/pr-ref'
 import { ticketKeyFromText } from '@shared/ticket-key'
 import { IPC, type ChatCreateInput, type ChatMessage, type ChatSummary, type PromptImage, type PromptRefs, type PushEvent, type QueuedMessage, type TranscriptPage } from '@shared/types'
-import { fileAttachments, skillAttachments } from './prompt-refs'
+import { agentAttachments, fileAttachments, skillAttachments } from './prompt-refs'
 import { skillGuardRules } from './skill-guard'
 import { pushToWindows } from '../push'
 import { notifyInbound } from '../notify'
 import { isConflict, promptImageFiles } from '../util'
 import { workManager } from '../pipeline/works'
 import { performanceMeter } from './performance'
+import { coordinator } from './coordinator'
+import { agentSessions } from './agent-sessions'
 
 /** Cache prefixes supplement incomplete native drafts, never completed history. */
 function mergePrefixes(history: ChatMessage[], prefixes: ChatMessage[]): ChatMessage[] {
@@ -190,6 +192,10 @@ class ChatManager {
     const custom = input.title?.trim()
     const title = custom || AUTO_TITLE
     const guard = await skillGuardRules(input.directory)
+    if (input.agentID) {
+      const agent = await api.agent.get({ agentID: input.agentID, location: { directory: input.directory } })
+      if (agent.data.hidden || agent.data.mode === 'subagent') throw new Error('Choose a visible primary agent; subagents are launched by the coordinator.')
+    }
     const session = await api.session.create({
       ...(custom ? { title: custom } : {}),
       agent: input.agentID ?? null,
@@ -219,6 +225,8 @@ class ChatManager {
       )
       .run(session.id, title, input.directory, input.agentID ?? null, input.model?.providerID ?? null, input.model?.id ?? null, input.ticketKey ?? null, prUrl ?? null, context, now, now)
     sessionIndex.register(session.id, 'chat')
+    // No prompt is sent; opening a conversation remains an empty transcript.
+    await coordinator.prepare(session.id).catch((error) => console.warn('[chat] coordinator setup failed:', describeError(error)))
     return {
       sessionId: session.id,
       title,
@@ -242,7 +250,7 @@ class ChatManager {
       for (const s of res.data) {
         const meta = s.metadata as Record<string, unknown> | undefined
         const revva = meta?.revva as Record<string, unknown> | undefined
-        if (revva?.kind !== 'chat' || known.has(s.id)) continue
+        if (revva?.kind !== 'chat' || known.has(s.id) || (s.parentID && !s.fork)) continue
         const dir = typeof s.location?.directory === 'string' ? s.location.directory : ''
         if (!dir) continue
         db.prepare(
@@ -387,6 +395,7 @@ class ChatManager {
   }
 
   async prompt(sessionId: string, text: string, images: PromptImage[] = [], queued = false, refs?: PromptRefs): Promise<void | 'queued'> {
+    await coordinator.prepare(sessionId)
     const chat = getDb().prepare('SELECT ticket_key, pr_url, context FROM chat WHERE session_id = ?').get(sessionId) as { ticket_key: string | null; pr_url: string | null; context: string | null } | undefined
     // A ticket/PR chat opens empty; its context rides the first real message only.
     // Cleared before delivery: a failed send keeps the folded text in the user's draft retry, never a double prefix.
@@ -409,11 +418,13 @@ class ChatManager {
     const dir = this.directoryOf(sessionId)
     const files = [...promptImageFiles(images), ...(refs && dir ? fileAttachments(refs, dir) : [])]
     const skills = refs ? skillAttachments(refs) : []
+    const agents = refs ? agentAttachments(refs) : []
     const payload = {
       sessionID: sessionId,
       text,
       ...(files.length ? { files } : {}),
       ...(skills.length ? { skills } : {}),
+      ...(agents.length ? { agents } : {}),
       delivery: (queued ? 'queue' : 'steer') as 'queue' | 'steer'
     }
     try {
@@ -443,6 +454,7 @@ class ChatManager {
       // already gone remotely — fine, remove local index anyway
     }
     getDb().prepare('DELETE FROM chat WHERE session_id = ?').run(sessionId)
+    agentSessions.forgetChildren(sessionId)
     sessionIndex.forget(sessionId)
   }
 
@@ -468,6 +480,14 @@ class ChatManager {
     if (typeof sessionId !== 'string') return
     if (sessionIndex.kindOf(sessionId) !== 'chat' && e.type !== 'session.renamed') return
     switch (e.type) {
+      case 'session.deleted': {
+        // Another Revva window/client may delete this conversation.
+        getDb().prepare('DELETE FROM chat WHERE session_id = ?').run(sessionId)
+        agentSessions.forgetChildren(sessionId)
+        sessionIndex.forget(sessionId)
+        pushToWindows({ kind: 'chat.idle', sessionId })
+        break
+      }
       case 'session.renamed': {
         // OpenCode auto-titles a session from its first message. Adopt that
         // title only while ours is still the placeholder, so a manual rename wins.

@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Bot, Check, ChevronDown, FolderOpen, Cpu } from 'lucide-react'
+import { Check, ChevronDown, FolderOpen, Cpu } from 'lucide-react'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -8,7 +8,7 @@ import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from '@/compone
 import type { ChatSummary } from '@shared/types'
 
 const DEFAULT = '__default__'
-type LastSelection = { directory: string; agentID?: string; model?: { providerID: string; id: string } }
+type LastSelection = { directory: string; model?: { providerID: string; id: string } }
 
 function readSelection(value: unknown): LastSelection | undefined {
   if (!value || typeof value !== 'object') return undefined
@@ -17,7 +17,6 @@ function readSelection(value: unknown): LastSelection | undefined {
   const model = data.model && typeof data.model === 'object' ? data.model as Record<string, unknown> : undefined
   return {
     directory: data.directory,
-    agentID: typeof data.agentID === 'string' ? data.agentID : undefined,
     model: model && typeof model.providerID === 'string' && typeof model.id === 'string' && model.providerID && model.id
       ? { providerID: model.providerID, id: model.id } : undefined
   }
@@ -37,7 +36,7 @@ export function NewChatDialog({ open, onOpenChange, onCreated }: {
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>New chat</DialogTitle>
-          <DialogDescription>Start a conversation with your last project and settings, or change them below.</DialogDescription>
+          <DialogDescription>Your project's default agent coordinates the work and calls specialists when useful.</DialogDescription>
         </DialogHeader>
         {open && (saved.isPending || chats.isPending ? (
           <p className="py-4 text-sm text-muted-foreground">Loading chat settings…</p>
@@ -52,7 +51,6 @@ export function NewChatDialog({ open, onOpenChange, onCreated }: {
 function selectionFromChat(chat: ChatSummary): LastSelection {
   return {
     directory: chat.directory,
-    agentID: chat.agentID,
     model: chat.providerID && chat.modelID ? { providerID: chat.providerID, id: chat.modelID } : undefined
   }
 }
@@ -65,27 +63,20 @@ function ChatChoices({ initial, onOpenChange, onCreated }: {
   const qc = useQueryClient()
   const popoverContainer = useRef<HTMLDivElement>(null)
   const workspaces = useQuery({ queryKey: ['workspaces'], queryFn: () => window.revva.workspace.list(), staleTime: 5 * 60_000 })
-  const agents = useQuery({ queryKey: ['agents'], queryFn: () => window.revva.inventory.agents(), staleTime: 60_000 })
   const models = useQuery({ queryKey: ['models'], queryFn: () => window.revva.inventory.models(), staleTime: 60_000 })
   const [directory, setDirectory] = useState(initial?.directory ?? '')
-  const [agentID, setAgentID] = useState(initial?.agentID ?? DEFAULT)
   const [modelKey, setModelKey] = useState(initial?.model ? modelKeyOf(initial.model.providerID, initial.model.id) : DEFAULT)
   const [projectOpen, setProjectOpen] = useState(false)
-  const [agentOpen, setAgentOpen] = useState(false)
   const [modelOpen, setModelOpen] = useState(false)
   const [customDir, setCustomDir] = useState(initial?.directory ?? '')
-  const [agentSearch, setAgentSearch] = useState('')
   const [modelSearch, setModelSearch] = useState('')
-  const selectedAgent = agents.data?.find((agent) => agent.id === agentID)
   const selectedModel = models.data?.find((model) => modelKeyOf(model.providerID, model.id) === modelKey)
-  const agentMissing = agentID !== DEFAULT && !!agents.data && !selectedAgent
   const modelMissing = modelKey !== DEFAULT && !!models.data && !selectedModel
   const modelBlocked = !!selectedModel?.gated
   const create = useMutation({
     mutationFn: async () => {
       const selection: LastSelection = {
         directory: directory.trim(),
-        agentID: agentID === DEFAULT ? undefined : agentID,
         model: modelKey === DEFAULT ? undefined : parseModelKey(modelKey)
       }
       if (!selection.directory) throw new Error('Choose a project folder for this chat.')
@@ -105,9 +96,8 @@ function ChatChoices({ initial, onOpenChange, onCreated }: {
     }
   })
   const matches = (value: string, search: string): boolean => value.toLowerCase().includes(search.trim().toLowerCase())
-  const agentReady = agentID === DEFAULT || (!!agents.data && !agents.isError && !agentMissing)
   const modelReady = modelKey === DEFAULT || (!!models.data && !models.isError && !modelMissing && !modelBlocked)
-  const canCreate = !!directory.trim() && !create.isPending && agentReady && modelReady
+  const canCreate = !!directory.trim() && !create.isPending && modelReady
 
   return (
     <>
@@ -136,24 +126,7 @@ function ChatChoices({ initial, onOpenChange, onCreated }: {
             </form>
           </PopoverContent>
         </Popover>
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <Popover open={agentOpen} onOpenChange={setAgentOpen}>
-            <PopoverTrigger render={<Button type="button" variant="outline" className="min-w-0 justify-start" />}>
-              <Bot data-icon="inline-start" />
-              <span className="min-w-0 flex-1 truncate text-left">{agentID === DEFAULT ? 'Default agent' : selectedAgent?.name || agentID}</span>
-              <ChevronDown data-icon="inline-end" />
-            </PopoverTrigger>
-            <PopoverContent container={popoverContainer} align="start" className="w-72 max-w-[calc(100vw-2rem)] gap-2 p-3">
-              <PopoverTitle>Agent</PopoverTitle>
-              <Input aria-label="Search agents" placeholder="Search agents…" value={agentSearch} onChange={(event) => setAgentSearch(event.target.value)} />
-              <div className="max-h-64 overflow-y-auto">
-                <Choice label="Service default" selected={agentID === DEFAULT} onClick={() => { setAgentID(DEFAULT); setAgentOpen(false) }} />
-                {(agents.data ?? []).filter((agent) => matches(`${agent.name ?? ''} ${agent.id}`, agentSearch)).map((agent) => (
-                  <Choice key={agent.id} label={agent.name || agent.id} selected={agentID === agent.id} onClick={() => { setAgentID(agent.id); setAgentOpen(false) }} />
-                ))}
-              </div>
-            </PopoverContent>
-          </Popover>
+        <div className="flex flex-col gap-2">
           <Popover open={modelOpen} onOpenChange={setModelOpen}>
             <PopoverTrigger render={<Button type="button" variant="outline" className="min-w-0 justify-start" />}>
               <Cpu data-icon="inline-start" />
@@ -173,13 +146,12 @@ function ChatChoices({ initial, onOpenChange, onCreated }: {
             </PopoverContent>
           </Popover>
         </div>
-        {agentMissing && <p role="alert" className="text-xs text-destructive">The saved agent is unavailable. Choose another agent.</p>}
         {modelMissing && <p role="alert" className="text-xs text-destructive">The saved model is unavailable. Choose another model.</p>}
         {modelBlocked && <p role="alert" className="text-xs text-destructive">{selectedModel?.gated}</p>}
-        {(agents.isError || models.isError) && (
+        {models.isError && (
           <div role="alert" className="flex items-center gap-2 text-xs text-destructive">
-            <span>Couldn’t load agents or models. Service defaults are still available.</span>
-            <Button type="button" size="xs" variant="outline" onClick={() => { if (agents.isError) void agents.refetch(); if (models.isError) void models.refetch() }}>Retry</Button>
+            <span>Couldn’t load models. The service default is still available.</span>
+            <Button type="button" size="xs" variant="outline" onClick={() => void models.refetch()}>Retry</Button>
           </div>
         )}
         {create.error instanceof Error && <p role="alert" className="text-xs text-destructive">{create.error.message}</p>}

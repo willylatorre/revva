@@ -157,6 +157,18 @@ function migrate(db: Database.Database): void {
     addColumnIfMissing(db, 'chat', 'context', 'TEXT')
     db.exec('PRAGMA user_version = 9;')
   }
+  if (version < 10) {
+    // Child sessions are indexed separately; OpenCode remains the transcript store.
+    db.exec(`
+      CREATE TABLE agent_session (
+        session_id TEXT PRIMARY KEY, parent_id TEXT NOT NULL, root_id TEXT NOT NULL,
+        title TEXT NOT NULL, directory TEXT NOT NULL, agent_id TEXT,
+        outcome TEXT, updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX idx_agent_session_parent ON agent_session(parent_id);
+      PRAGMA user_version = 10;
+    `)
+  }
 }
 
 function addColumnIfMissing(db: Database.Database, table: string, column: string, decl: string): boolean {

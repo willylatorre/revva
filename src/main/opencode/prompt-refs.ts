@@ -1,7 +1,7 @@
 /**
  * Composer token → OpenCode prompt attachments. The renderer tokenizes the
  * message text and reports byte offsets; we pass them through as `mention` so
- * OpenCode links each `/skill` and `@file` token to its attachment.
+ * OpenCode links `/skill`, `@file` and `#agent` tokens to their attachments.
  */
 import { basename, join } from 'node:path'
 import { existsSync } from 'node:fs'
@@ -11,6 +11,11 @@ const clip = (s: string, max: number): string => (s.length > max ? `${s.slice(0,
 
 export function skillAttachments(refs: PromptRefs): Array<{ id: string; mention: { start: number; end: number; text: string } }> {
   return refs.skills.map((s) => ({ id: s.id, mention: { start: s.start, end: s.end, text: clip(s.text, 300) } }))
+}
+
+/** Explicit #agent tokens reference discovered profiles, without switching the coordinator. */
+export function agentAttachments(refs: PromptRefs): Array<{ name: string; mention: { start: number; end: number; text: string } }> {
+  return (refs.agents ?? []).map((agent) => ({ name: agent.id, mention: { start: agent.start, end: agent.end, text: clip(agent.text, 300) } }))
 }
 
 /** @file refs become file:// attachments rooted at the session's working directory. */

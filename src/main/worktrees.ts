@@ -243,7 +243,6 @@ class WorktreeManager {
     const chat = await chatManager.create({
       directory,
       title: `Clean up worktrees (${worktrees.length})`.slice(0, 80),
-      agentID: generalSelection?.agentID,
       model: generalSelection?.model
     })
     const text = [
