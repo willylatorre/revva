@@ -681,6 +681,8 @@ export const pendingItemSchema = z.object({
   kind: z.enum(['form', 'permission']),
   id: z.string(),
   sessionID: z.string(),
+  /** Root conversation for a delegated agent request. */
+  rootId: z.string().optional(),
   title: z.string(),
   directory: z.string(),
   createdAt: z.number(),

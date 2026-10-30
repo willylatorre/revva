@@ -46,7 +46,9 @@ class InboxManager extends EventEmitter {
   }
 
   list(): PendingItem[] {
-    return [...this.pending.values()].sort((a, b) => a.createdAt - b.createdAt)
+    const root = getDb().prepare('SELECT root_id FROM agent_session WHERE session_id = ?')
+    return [...this.pending.values()].map((item) => ({ ...item, rootId: (root.get(item.sessionID) as { root_id: string } | undefined)?.root_id }))
+      .sort((a, b) => a.createdAt - b.createdAt)
   }
 
   /** Drop questions belonging to a review that is no longer being tracked. */

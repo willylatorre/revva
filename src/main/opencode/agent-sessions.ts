@@ -28,6 +28,44 @@ const summary = (row: AgentRow): AgentSession => ({
 class AgentSessions {
   private wired = false
   private recovery: Promise<void> | undefined
+  private childDeliveries = new Set<string>()
+  private reviewFences = new Set<string>()
+
+  /** Serialize Revva child delivery with review startup, including asynchronous service calls. */
+  async deliverToChild<T>(sessionId: string, deliver: () => Promise<T>): Promise<T> {
+    const root = this.rootOf(sessionId)
+    if (!root || root === sessionId) throw new Error('Child agent not found.')
+    const work = getDb().prepare('SELECT id, state FROM work WHERE session_id = ?').get(root) as { id: string; state: string } | undefined
+    if (this.reviewFences.has(root) || (work && (['REVIEW', 'FIXING'].includes(work.state) || getDb().prepare("SELECT 1 FROM review WHERE work_id = ? AND status IN ('pending','running') LIMIT 1").get(work.id)))) {
+      throw new Error('Review is in progress. Wait for it to finish before continuing a child agent.')
+    }
+    if (this.childDeliveries.has(root)) throw new Error('Another child follow-up is being delivered. Try again shortly.')
+    this.childDeliveries.add(root)
+    try { return await deliver() } finally { this.childDeliveries.delete(root) }
+  }
+
+  fenceReview(root: string | null): () => void {
+    if (!root) return () => undefined
+    if (this.childDeliveries.has(root) || this.reviewFences.has(root)) throw new Error('A child agent follow-up is being delivered. Wait before starting review.')
+    this.reviewFences.add(root)
+    return () => this.reviewFences.delete(root)
+  }
+
+  /** Refresh the entire live tree, not just the index or immediate children. */
+  async requireStoppedTree(root: string | null): Promise<void> {
+    if (!root) return
+    const ids = [root]
+    for (let i = 0; i < ids.length; i++) {
+      for (const child of await this.children(ids[i]!)) if (!ids.includes(child.sessionId)) ids.push(child.sessionId)
+    }
+    const active = await openCodeService.api.session.active()
+    const running = ids.find((id) => id in active)
+    if (running) throw new Error(`Implementation or delegated agent ${running} is still running. Wait for it to finish before reviewing.`)
+    for (const sessionID of ids) {
+      const queued = await openCodeService.api.session.inbox.list({ sessionID })
+      if (queued.some((item) => item.type === 'user')) throw new Error(`Session ${sessionID} has queued messages. Send or remove them before reviewing.`)
+    }
+  }
 
   get(sessionId: string): AgentSession | undefined {
     const row = getDb().prepare('SELECT * FROM agent_session WHERE session_id = ?').get(sessionId) as AgentRow | undefined
@@ -67,7 +105,7 @@ class AgentSessions {
       const page = await openCodeService.api.session.list({ parentID: parentId, limit: 100, cursor })
       for (const session of page.data) if (this.register(session)) found.add(session.id)
       cursor = page.cursor.next ?? undefined
-      if (cursor && seen.has(cursor)) break
+      if (cursor && seen.has(cursor)) throw new Error('Could not enumerate all delegated agents. Try again before reviewing.')
       if (cursor) seen.add(cursor)
     } while (cursor)
     for (const id of previous) if (!found.has(id)) this.forget(id)

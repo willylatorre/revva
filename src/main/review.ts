@@ -24,6 +24,7 @@ import { latestAssistantText } from './opencode/transcript-requests'
 import { listSkills } from './opencode/inventory'
 import { skillGuardRules } from './opencode/skill-guard'
 import { coordinator } from './opencode/coordinator'
+import { agentSessions } from './opencode/agent-sessions'
 import { getDb, roleConfigGet, settingGet } from './db'
 import { workManager } from './pipeline/works'
 import { shipManager } from './ship'
@@ -294,14 +295,15 @@ class ReviewManager {
     if (newCycle) getDb().prepare('UPDATE work SET review_cycle_start = ? WHERE id = ?').run(round, workId)
     workManager.setReviewState(workId, 'REVIEW')
 
+    let unfence = (): void => undefined
     try {
+      const build = getDb().prepare('SELECT session_id FROM work WHERE id = ?').get(workId) as { session_id: string | null }
+      unfence = agentSessions.fenceReview(build.session_id)
       await this.requireStoppedReviews(workId)
       if (!work.branch) throw new Error('Choose the conversation’s Git worktree and check out a branch before starting review.')
       const attached = (await exec('git', ['-C', work.worktree_dir, 'branch', '--show-current'])).stdout.trim()
       if (attached !== work.branch) throw new Error('The checkout branch changed. Re-select the review folder before starting review.')
-      const active = await openCodeService.api.session.active()
-      const build = getDb().prepare('SELECT session_id FROM work WHERE id = ?').get(workId) as { session_id: string | null }
-      if (build.session_id && build.session_id in active) throw new Error('Implementation is still running. Wait for it to finish before starting review.')
+      await agentSessions.requireStoppedTree(build.session_id)
       const status = await exec('git', ['-C', work.worktree_dir, 'status', '--porcelain'])
       if (status.stdout.trim()) throw new Error('Commit all worktree changes before starting review.')
       const head = (await exec('git', ['-C', work.worktree_dir, 'rev-parse', 'HEAD'])).stdout.trim()
@@ -360,6 +362,7 @@ class ReviewManager {
       workManager.setReviewState(workId, 'WAITING_HUMAN', `Could not start review: ${describeError(err)}`)
       throw err
     } finally {
+      unfence()
       this.starting.delete(workId)
       if (this.recoverAfterStart.delete(workId)) void this.recover()
     }
@@ -387,11 +390,12 @@ class ReviewManager {
     if (row.role === 'fixer' && row.status !== 'error') throw new Error('Only a failed fixer can be retried.')
 
     this.starting.add(workId)
+    let unfence = (): void => undefined
     try {
-      await this.requireStoppedReviews(workId)
-      const active = await openCodeService.api.session.active()
       const build = getDb().prepare('SELECT session_id FROM work WHERE id = ?').get(workId) as { session_id: string | null }
-      if (build.session_id && build.session_id in active) throw new Error('Implementation is still running in the main conversation. Stop that run or wait for it to finish before relaunching an agent.')
+      unfence = agentSessions.fenceReview(build.session_id)
+      await this.requireStoppedReviews(workId)
+      await agentSessions.requireStoppedTree(build.session_id)
       const changes = rows.filter((r) => r.role !== 'fixer' && r.status === 'changes')
       if (row.role === 'fixer') {
         if (!changes.length || rows.some((r) => r.role !== 'fixer' && r.status === 'error')) throw new Error('Resolve reviewer errors before resuming the fixer.')
@@ -432,6 +436,7 @@ class ReviewManager {
       await this.runReviewer(work, round, Number(result.lastInsertRowid), row.role as ReviewRole, { agentID: row.agentID, model: row.model }, skills, scope)
       this.push(workId, round)
     } finally {
+      unfence()
       this.starting.delete(workId)
       if (this.recoverAfterStart.delete(workId)) void this.recover()
     }
@@ -728,7 +733,8 @@ class ReviewManager {
     if (changes.length === 0) {
       this.starting.add(workId)
       try {
-        const work = getDb().prepare('SELECT worktree_dir, review_head FROM work WHERE id = ?').get(workId) as { worktree_dir: string; review_head: string | null }
+        const work = getDb().prepare('SELECT worktree_dir, review_head, session_id FROM work WHERE id = ?').get(workId) as { worktree_dir: string; review_head: string | null; session_id: string | null }
+        await agentSessions.requireStoppedTree(work.session_id)
         const [head, status] = await Promise.all([
           exec('git', ['-C', work.worktree_dir, 'rev-parse', 'HEAD']),
           exec('git', ['-C', work.worktree_dir, 'status', '--porcelain'])
@@ -790,6 +796,8 @@ class ReviewManager {
     let resumedSessionId: string | undefined
     try {
       const api = openCodeService.api
+      const build = getDb().prepare('SELECT session_id FROM work WHERE id = ?').get(workId) as { session_id: string | null }
+      await agentSessions.requireStoppedTree(build.session_id)
       const previous = resume?.sessionId ? await api.session.get({ sessionID: resume.sessionId }).catch((err) => {
         if ((err as { _tag?: string })._tag === 'SessionNotFoundError') return undefined
         throw err

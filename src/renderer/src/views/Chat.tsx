@@ -1387,7 +1387,7 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
             </DropdownMenu>
           )}
           {chatWork && <ConversationActions work={chatWork} />}
-          {chat && !chatWork && !chat.ticketKey && !chat.prUrl && <Button variant="outline" size="sm" className="shrink-0" disabled={enableReview.isPending} onClick={() => enableReview.mutate()}>{enableReview.isPending ? 'Preparing review…' : 'Review this checkout'}</Button>}
+          {chat && !chatWork && !chat.ticketKey && !chat.prUrl && <Button variant="outline" size="sm" className="shrink-0" disabled={enableReview.isPending} onClick={() => enableReview.mutate()}>{enableReview.isPending ? 'Enabling review controls…' : 'Enable review controls'}</Button>}
           {(chatWork?.prUrl || chat?.prUrl) && (
             <PrConversationActions
               prUrl={chatWork?.prUrl ?? chat?.prUrl}

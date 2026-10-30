@@ -14,6 +14,7 @@ import { skillGuardRules, type SkillGuardRule } from './skill-guard'
 import { collaborationTransport } from './collaboration-transport'
 import { eventBus } from './bus'
 import { reviewTranscriptContext, reviewTranscriptInstructions } from './review-context'
+import { checkoutTopLevel } from '../branches'
 
 const idSchema = z.string().min(1).max(500)
 const textSchema = z.string().trim().min(1).max(32_000)
@@ -236,7 +237,10 @@ class Coordinator {
     const known = agentSessions.rootOf(sessionId) || getDb().prepare('SELECT id FROM review WHERE session_id = ?').get(sessionId)
     if (!known) throw new Error('Conversation is not indexed by Revva.')
     const session = await openCodeService.api.session.get({ sessionID: sessionId })
-    if (canonical(session.location.directory) !== directory) throw new Error('Conversation belongs to another checkout. Cross-checkout access is not allowed.')
+    if (canonical(session.location.directory) !== directory) {
+      const [targetRoot, callerRoot] = await Promise.all([checkoutTopLevel(session.location.directory), checkoutTopLevel(directory)])
+      if (targetRoot !== callerRoot) throw new Error('Conversation belongs to another checkout. Cross-checkout access is not allowed.')
+    }
     return session
   }
 
@@ -317,7 +321,7 @@ class Coordinator {
         await this.restrictHelper(target)
         this.rateLimit(agentSessions.rootOf(caller.id)!)
         const text = `Message from Revva agent ${caller.id} (${caller.title ?? caller.agent ?? 'agent'}):\n\n${String(args.text)}`
-        if (agentSessions.get(targetId)) await openCodeService.api.session.prompt({ sessionID: targetId, text, delivery: 'queue' })
+        if (agentSessions.get(targetId)) await agentSessions.deliverToChild(targetId, () => openCodeService.api.session.prompt({ sessionID: targetId, text, delivery: 'queue' }))
         else await chatManager.prompt(targetId, text, [], true)
         return { sessionId: targetId, delivery: 'queue', note: 'Message accepted. Read this conversation later for its response; no automatic reply is sent.' }
       }, true),

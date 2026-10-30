@@ -395,6 +395,7 @@ class ChatManager {
   }
 
   async prompt(sessionId: string, text: string, images: PromptImage[] = [], queued = false, refs?: PromptRefs): Promise<void | 'queued'> {
+    if (agentSessions.get(sessionId)) return agentSessions.deliverToChild(sessionId, () => this.sendPrompt(sessionId, text, images, queued, refs))
     await coordinator.prepare(sessionId)
     const chat = getDb().prepare('SELECT ticket_key, pr_url, context FROM chat WHERE session_id = ?').get(sessionId) as { ticket_key: string | null; pr_url: string | null; context: string | null } | undefined
     // A ticket/PR chat opens empty; its context rides the first real message only.

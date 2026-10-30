@@ -24,7 +24,15 @@ export function ChildAgentActivity({ sessionId, renderTranscript }: {
     enabled: visible,
     staleTime: 30_000
   })
-  const selected = path.at(-1)
+  const snapshot = path.at(-1)
+  const parentId = path.at(-2)?.sessionId ?? sessionId
+  const parent = useQuery({
+    queryKey: ['session-children', parentId],
+    queryFn: () => window.revva.session.children(parentId),
+    enabled: visible && !!snapshot,
+    staleTime: 30_000
+  })
+  const selected = parent.data?.find((row) => row.sessionId === snapshot?.sessionId) ?? snapshot
   const descendants = useQuery({
     queryKey: ['session-children', selected?.sessionId],
     queryFn: () => window.revva.session.children(selected!.sessionId),
@@ -40,7 +48,10 @@ export function ChildAgentActivity({ sessionId, renderTranscript }: {
     if (selected && ((event.kind === 'session.children' && (event.sessionId === selected.sessionId || event.sessionId === '*')) || (event.kind === 'chat.idle' && event.sessionId === '*'))) {
       void qc.invalidateQueries({ queryKey: ['session-children', selected.sessionId] })
     }
-  }), [qc, sessionId, selected?.sessionId])
+    if (snapshot && event.kind === 'session.children' && (event.sessionId === parentId || event.sessionId === '*')) {
+      void qc.invalidateQueries({ queryKey: ['session-children', parentId] })
+    }
+  }), [qc, sessionId, selected?.sessionId, parentId, snapshot?.sessionId])
   const stop = useMutation({
     mutationFn: (id: string) => window.revva.chat.interrupt(id),
     onSettled: () => {
@@ -49,7 +60,7 @@ export function ChildAgentActivity({ sessionId, renderTranscript }: {
     }
   })
   const rows = children.data ?? []
-  const waiting = inbox.filter((item) => rows.some((row) => row.sessionId === item.sessionID))
+  const waiting = inbox.filter((item) => item.rootId === sessionId)
   const status = (row: AgentSession): string => inbox.some((item) => item.sessionID === row.sessionId) ? 'Needs you'
     : activity.data?.includes(row.sessionId) ? 'Running'
       : row.outcome === 'failed' ? 'Failed' : row.outcome === 'interrupted' ? 'Stopped' : row.outcome === 'succeeded' ? 'Finished' : 'Ready'
