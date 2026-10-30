@@ -2,7 +2,7 @@
 
 ## Status
 - Priority: P3; effort: M–L; risk: HIGH for adoption; category: perf
-- Depends on: 017–020
+- Depends on: 017/018 for compatibility research (merged); 020 must be approved before final end-to-end comparison or adoption. 019 is transport-only and does not gate parser research.
 - Planned at: `298d1df`, 2026-10-30
 
 ## Why this matters
@@ -16,7 +16,7 @@ Always allowed: `plans/021-markdown-parser-performance-spike.md` to append findi
 Conditionally allowed only after evidence supports adoption: focused renderer parser adapter under `src/renderer/src/lib`, assistant-markdown/cache integration, `package.json`/`pnpm-lock.yaml` for upstream parser dependency, `CHANGELOG.md`. No copied PandaCode code, native/Tauri migration, provider/model settings, HTML sinks, version bump, tests/frameworks or broader UI changes.
 
 ## Workflow / commands
-Use provided isolated worktree after 017–020. Compare `git diff --stat 298d1df..HEAD -- package.json pnpm-lock.yaml src/renderer/src` with expected earlier changes. Use a separate temporary sandbox for candidate dependency installation, not user checkout. Commit only evidence-backed scoped code; no push/merge. Reviewer maintains index.
+Compatibility research runs in `/Users/a2023362/.local/share/opencode/worktree/9d8a46/markdown-parser-spike`, initially at d7af098. Compare `git diff --stat d7af098..HEAD -- package.json pnpm-lock.yaml src/renderer/src` for unexpected drift. Use a separate approved temporary sandbox for candidate installation, not user checkout or production dependencies. No adoption/source edits during this first parallel phase. After 020 review, the advisor will supply its exact commit for a fair end-to-end comparison; do not compare a pre-cache baseline and present it as post-020. Commit only evidence-backed scoped code after that gate; no push/merge. Reviewer maintains index.
 
 ## Steps
 1. Inspect available upstream md4c/WASM distributions for licensing, API, GFM support, bundle/startup costs and React/AST conversion. Record exact version/source and whether safe integration is feasible. Never invent package/API. If no maintainable compatible candidate exists, record BLOCKED/REJECTED reason and leave production parser unchanged. Verify: recorded package/docs evidence.
@@ -88,3 +88,9 @@ Coordinator independently reproduced `node probe-compat.mjs` (25 MATCH/31, 6 DIF
 3. Bundle numbers demoted to node_modules disk inventory; renderer (not main) bundle; react-markdown retained for other render paths even under assistant-only adoption — no bundle-shrink claim.
 4. Workload is 50,000 UTF-16 characters = 50,228 bytes (`node sizes.mjs`); md4w variant is 50,000 chars = 50,000 bytes (ASCII). All microbench labels re-stated as pre-020 parser-pipeline server microbench, not end-to-end or fallback.
 Conclusions unchanged: md4x concrete prose-rewriting cases and the md4w invalid-JSON bug stand as verified; production parser unchanged; CSP not weakened; adoption stays DEFERRED.
+## Reviewed phase-1 outcome — 2026-10-30
+Research commits `d7a07b1` and corrected `b4b41a2` on `research/markdown-parser-spike` contain the detailed artifact/API, compatibility and server-microbenchmark record. APPROVE research only; replacement is DEFERRED for this round, not a promised follow-on implementation. Current production parser, dependencies and CSP remain unchanged. A future adoption proposal still needs a compatible/fallback design and post-020 in-app profiling; that is not required to ship the other four improvements.
+
+Advisor independently reran the disposable `probe-compat.mjs` and `md4w-bug.mjs` in the approved external sandbox. The first reports 25 normalized library-level matches out of 31 cases and six differences: five fixed-dialect prose rewrites (literal double-equals, dollar-delimited text, frontmatter, callout markers and heading-attribute text) plus one footnote-adapter gap. A separate probe reported line-end attribute text consumption. This baseline uses default ReactMarkdown elements, NOT Revva's MD_COMPONENTS, and normalizes markup; it does not establish UI/layout/security parity. The md4w AST API independently throws invalid-JSON errors for ordinary links with quoted titles.
+
+Reported parser/conversion timing gains are exploratory Node/server microbenchmarks, not post-cache browser performance or an adoption justification. The mixed workload has 50,000 UTF-16 code units (50,228 bytes), not exactly 50 KB. Raw dependency source-file inventories are not production bundle sizes; the parser runs in the renderer, and other Revva screens would still retain ReactMarkdown. Review required and received corrections to these distinctions. No full end-to-end speedup is claimed.
