@@ -18,7 +18,7 @@ import { cn } from '@/lib/utils'
 import { EMPTY_STREAM, beginTranscriptSnapshot, displayTranscript, finishTranscriptSnapshot, mergeHistory, mergeTranscript, streamKey, transcriptReady, useTranscriptVisibility, type LiveTranscript } from '@/lib/transcript-stream'
 import { transcriptRequest } from '@/lib/transcript-requests'
 import { SessionStats } from '@/components/session-stats'
-import { AgentsGlance } from '@/components/agents-glance'
+import { AgentsPanel } from '@/components/agents-panel'
 import { MD_COMPONENTS } from '@/components/message-markdown'
 import { Choice } from './NewChatDialog'
 import type { AgentInfo, ChatMessage, ChatToolCall, FileHit, ModelRef, PromptImage, PromptRefs, QueuedMessage, SkillInfo, WorkSummary, TranscriptPage } from '@shared/types'
@@ -27,7 +27,6 @@ import { PrConversationActions } from './PrConversationActions'
 import { ConversationEnvironment, ConversationActions, ConversationDetails } from './ConversationEnvironment'
 import { WorkAgentActivity } from './WorkAgentActivity'
 import { WorkFollowUpQueue } from './WorkFollowUpQueue'
-import { ChildAgentActivity } from './ChildAgentActivity'
 import { ChatReviewButton } from './ChatReviewButton'
 
 const IMAGE_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp'
@@ -594,7 +593,10 @@ export function TranscriptView({
       <div ref={scrollWrapRef} className="relative flex min-h-0 flex-1 flex-col">
         <div className="pointer-events-none absolute right-3 top-3 z-10 flex flex-col items-end gap-2 sm:right-6">
           <SessionStats sessionId={sessionId} running={running} />
-          {!readOnly && !hideChildAgents && <AgentsGlance key={`glance-${sessionId}`} sessionId={sessionId} work={work} />}
+          {!readOnly && !hideChildAgents && <AgentsPanel key={`agents-${sessionId}`} sessionId={sessionId} work={work} renderTranscript={(child) => (
+            <TranscriptView key={child.sessionId} sessionId={child.sessionId} drive={chatDrive} readOnly hideChildAgents hideSessionDetails
+              emptyHint="This agent has not produced output yet." header={<><span className="min-w-0 flex-1 truncate text-xs">Agent output</span><SessionIdButton sessionId={child.sessionId} /></>} />
+          )} />}
         </div>
         <ScrollArea className="min-h-0 flex-1">
           <div className="mx-auto flex max-w-3xl flex-col gap-4 px-6 pb-5 pt-16">
@@ -630,10 +632,6 @@ export function TranscriptView({
       )}
       <div className="min-h-0 max-h-[35vh] shrink overflow-y-auto">
       {work && <WorkAgentActivity key={work.id} work={work} />}
-      {!readOnly && !hideChildAgents && <ChildAgentActivity key={sessionId} sessionId={sessionId} renderTranscript={(child) => (
-        <TranscriptView key={child.sessionId} sessionId={child.sessionId} drive={chatDrive} readOnly hideChildAgents hideSessionDetails
-          emptyHint="This agent has not produced output yet." header={<><span className="min-w-0 flex-1 truncate text-xs">Agent output</span><SessionIdButton sessionId={child.sessionId} /></>} />
-      )} />}
       {running && !reviewing && (
         <div className="shrink-0 px-3 py-1.5 sm:px-6" role="status" aria-live="polite">
           <div className="mx-auto flex max-w-3xl items-center gap-2 overflow-hidden">
