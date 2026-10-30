@@ -86,6 +86,22 @@ export async function mainRepoOf(worktreeTop: string): Promise<string> {
   return realpath(dirname(isAbsolute(common) ? common : resolve(worktreeTop, common)))
 }
 
+/**
+ * What a folder *is* as a checkout, read from git: its top level, the main checkout that
+ * owns it, and the branch it has attached (empty when detached). `undefined` when the
+ * folder is not inside a checkout at all — callers word that refusal themselves.
+ */
+export async function probeCheckout(folder: string): Promise<{ worktreeDir: string; repoDir: string; branch: string } | undefined> {
+  try {
+    const worktreeDir = await checkoutTopLevel(folder)
+    const repoDir = await mainRepoOf(worktreeDir)
+    const branch = (await git(worktreeDir, ['branch', '--show-current'])).trim()
+    return { worktreeDir, repoDir, branch }
+  } catch {
+    return undefined
+  }
+}
+
 /** Branches of the repository owning `directory`, current first, with each branch's worktree occupancy. */
 export async function listRepoBranches(directory: string): Promise<RepoBranchList> {
   const top = await checkoutTopLevel(directory)

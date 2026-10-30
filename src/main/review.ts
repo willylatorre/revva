@@ -275,6 +275,9 @@ class ReviewManager {
 
   /** Kick off reviewer fan-out for a round. Called after a build settles or on demand. */
   async startRound(workId: string, round: number, newCycle = false): Promise<void> {
+    // Re-adopt the checkout if the row drifted from it (a row anchored before its
+    // folder became a checkout keeps a blank branch, which would refuse every round).
+    await workManager.healCheckoutAnchor(workId)
     const work = getDb().prepare('SELECT * FROM work WHERE id = ?').get(workId) as
       | { id: string; ticket_key: string; branch: string; worktree_dir: string; parent_work_id: string | null; mode: string; review_sel: string | null }
       | undefined

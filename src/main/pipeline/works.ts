@@ -26,7 +26,7 @@ import { reviewManager } from '../review'
 import { shipManager } from '../ship'
 import { throughputMeter } from '../opencode/throughput'
 import { performRemoval, preflightWorktreeRemoval, probeActiveAgentsInside, requireAbsenceOfAgents, staleConfirmationError } from '../worktree-safety'
-import { checkoutBranch, listRepoBranches } from '../branches'
+import { checkoutBranch, listRepoBranches, probeCheckout } from '../branches'
 import { renderPrompt, DEFAULT_START_PROMPT, BUILD_COMPLETION_INSTRUCTIONS } from '@shared/prompts'
 import {
   IPC,
@@ -155,7 +155,11 @@ class WorkManager {
     if (!chat.ticket_key && !chat.pr_url && (!existing || existing.state === 'ABANDONED')) throw new Error('Link this conversation to a Jira ticket or PR to enable its review utilities.')
     if (existing && existing.state !== 'ABANDONED' && !directory) {
       sessionIndex.register(sessionId, 'work')
-      return this.toSummary(existing)
+      // The row may have anchored before its folder became a checkout ("Chat with
+      // this PR" opens the chat first, the worktree arrives later). Re-read git
+      // once so the utilities show the branch that is actually attached.
+      const healed = await this.healCheckoutAnchor(existing.id)
+      return healed ?? this.toSummary(existing)
     }
     if (existing && existing.state !== 'ABANDONED') {
       if (existing.state === 'SHIPPED') throw new Error('The shipped run’s review folder cannot be reassigned. Start another linked conversation for new work.')
@@ -234,7 +238,10 @@ class WorkManager {
     const wanted = input.directory?.trim()
     if (!wanted && !branch) throw new Error('Pick a worktree or a branch first.')
 
-    const work = this.workBySession(sessionId)
+    let work = this.workBySession(sessionId)
+    // A row anchored before its folder became a checkout records no branch, which would
+    // make the PR guard below compare against a blank. Re-read git first when that's the case.
+    if (work && !work.branch && work.state !== 'ABANDONED' && await this.healCheckoutAnchor(work.id)) work = this.workBySession(sessionId)
     if (work && work.state !== 'ABANDONED') {
       if (work.state === 'SHIPPED') throw new Error('This run shipped from its checkout. Start another linked conversation to work somewhere else.')
       if (this.isPrompting(work.id) || this.hasFollowUps(work.id)) throw new Error('Send or remove the saved follow-ups before changing where this conversation works.')
@@ -254,7 +261,12 @@ class WorkManager {
         throw new Error(`That worktree is gone: ${wanted}. Nothing was changed.`)
       }
     }
-    if (to === from && !branch) return { work: work && work.state !== 'ABANDONED' ? this.toSummary(work) : null, note: 'Already working there — nothing changed.' }
+    if (to === from && !branch) {
+      // Same folder, no branch asked — still re-read a checkout that was anchored
+      // before its folder existed (see `healCheckoutAnchor`).
+      const healed = work && work.state !== 'ABANDONED' ? await this.healCheckoutAnchor(work.id) : undefined
+      return { work: healed ?? (work && work.state !== 'ABANDONED' ? this.toSummary(work) : null), note: healed ? `Already working in ${to}. Revva re-read the checkout: branch ${healed.branch}.` : 'Already working there — nothing changed.' }
+    }
 
     // The target must be a checkout this repository registered, and the branch must be
     // one the picker could have offered (current, free, local or on exactly one remote).
@@ -305,12 +317,38 @@ class WorkManager {
       try {
         refreshed = await this.conversationContext(sessionId, to)
       } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err)
-        throw new Error(`${note ? `${note}. ` : ''}Revva could not re-read that checkout: ${reason} Nothing was lost — reopen Details to see where it stands.`)
+        throw new Error(`${note ? `${note}. ` : ''}Revva could not re-read that checkout: ${describeError(err)} Nothing was lost — reopen Details to see where it stands.`)
       }
     }
     if (!note) note = 'Nothing changed.'
     return { work: refreshed, note: note.endsWith('.') ? note : `${note}.` }
+  }
+
+  /**
+   * Re-read a work row's checkout from git when the row never recorded one.
+   *
+   * The drift this exists for: “Chat with this PR” opens the conversation *before*
+   * the PR worktree exists, so the row anchors with an empty branch — and review,
+   * shipping and the Details pickers then compare git against that blank forever
+   * (“Choose the conversation's Git worktree and check out a branch”, with nothing
+   * left to pick). When the folder has since become a real checkout on a branch,
+   * adopt what git says: folder, repository, branch. Only a row that recorded no
+   * branch at all is healed — a row that *had* one and drifted stays under the
+   * explicit “re-select the review folder” guard, so review can never silently
+   * switch what it audits. Anchor fields only; a detached or still-missing
+   * checkout changes nothing, and a row mid-review, mid-ship or mid-prompt is left alone.
+   * Returns the row when it was corrected.
+   */
+  async healCheckoutAnchor(workId: string): Promise<WorkSummary | undefined> {
+    const row = getDb().prepare('SELECT * FROM work WHERE id = ?').get(workId) as WorkRow | undefined
+    if (!row || row.branch || row.state === 'ABANDONED' || row.state === 'SHIPPED') return undefined
+    if (reviewManager.isBusyReviewing(row.id) || shipManager.isShipping(row.id) || this.isPrompting(row.id)) return undefined
+    const found = await probeCheckout(row.worktree_dir)
+    if (!found || !found.branch) return undefined
+    getDb().prepare('UPDATE work SET repo_dir = ?, worktree_dir = ?, branch = ?, blocker = NULL, updated_at = ? WHERE id = ?')
+      .run(found.repoDir, found.worktreeDir, found.branch, Date.now(), row.id)
+    this.emit(row.id, row.state as WorkState)
+    return this.toSummary(getDb().prepare('SELECT * FROM work WHERE id = ?').get(row.id) as WorkRow)
   }
 
   /** Removing a conversation never deletes its folder or branch. */

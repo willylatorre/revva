@@ -7,9 +7,11 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
-- **`pnpm dev` starts on Windows after a fresh install** — since Electron 42 the npm package no longer downloads its binary in a `postinstall` script, so on a clean machine `node_modules/electron/path.txt` never existed and `electron-vite dev` died with `Error: Electron uninstall` right after the renderer server came up. The project's own `postinstall` now runs `install-electron` (Electron's official on-demand installer) before rebuilding `better-sqlite3`, so `pnpm install` always leaves a usable Electron binary on macOS and Windows. On a checkout already stuck with the error, one `pnpm install` (or `pnpm exec install-electron`) fixes it in place.
+- **Reviewer failures say what failed** — a failing reviewer showed `[object Object]` instead of the error because the OpenCode service reports failures as structured objects (`{ type, message, status }`), which stringified to nothing useful. Revva now shows the message with its kind and HTTP status — e.g. "The security token included in the request is expired (provider.auth HTTP 401)" — wherever a session failure surfaces (review cards, retry, work blocker).
 
-- (nothing yet)
+- **Stale "check out a branch" refusal heals itself** — a conversation opened with *Chat with this PR* anchored its run before the PR worktree existed, so its row recorded no branch and review/shipping refused forever with "Choose the conversation's Git worktree and check out a branch" — with nothing left to pick. Opening the conversation (or its Details, or pressing Start reviews/Ship) now re-reads git once and adopts the branch actually checked out in that folder; the old refusal is gone and the review folder is re-anchored the same way. A checkout that *had* a branch and then drifted is deliberately left alone — that still requires an explicit re-select, so review can never silently switch what it audits.
+
+- **`pnpm dev` starts on Windows after a fresh install** — since Electron 42 the npm package no longer downloads its binary in a `postinstall` script, so on a clean machine `node_modules/electron/path.txt` never existed and `electron-vite dev` died with `Error: Electron uninstall` right after the renderer server came up. The project's own `postinstall` now runs `install-electron` (Electron's official on-demand installer) before rebuilding `better-sqlite3`, so `pnpm install` always leaves a usable Electron binary on macOS and Windows. On a checkout already stuck with the error, one `pnpm install` (or `pnpm exec install-electron`) fixes it in place.
 
 ## [1.2.0] - 2026-10-29
 

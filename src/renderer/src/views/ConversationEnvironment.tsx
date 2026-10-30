@@ -131,6 +131,25 @@ export function ConversationDetails({ sessionId, directory, work, children }: {
   })
   const here = work?.worktreeDir ?? directory ?? ''
   const picked = worktree ?? (here || null)
+  // A run whose folder became a checkout only after the conversation opened (Chat with
+  // this PR) keeps a blank branch in its row; opening these details re-reads git once,
+  // so the panel and the pickers below tell the truth before Apply is ever pressed.
+  const reanchor = useQuery({
+    queryKey: ['conversation-context', sessionId, 'heal'],
+    queryFn: async () => {
+      const healed = await window.revva.work.conversationContext(sessionId)
+      await qc.invalidateQueries({ queryKey: ['works'] })
+      return healed
+    },
+    enabled: open && !!work && !work.branch,
+    retry: false,
+    staleTime: Infinity
+  })
+  const anchorNote = work && !work.branch
+    ? reanchor.isError
+      ? `Revva could not re-read this checkout: ${reanchor.error instanceof Error ? reanchor.error.message : String(reanchor.error)}`
+      : 'Revva is re-reading this checkout…'
+    : null
   const branches = useQuery({
     queryKey: ['worktree-branches', picked],
     queryFn: () => window.revva.worktrees.branches({ directory: picked ?? here }),
@@ -177,7 +196,7 @@ export function ConversationDetails({ sessionId, directory, work, children }: {
       <PopoverTitle>Conversation details</PopoverTitle>
       <dl className="flex flex-col gap-3 text-sm">
         <div><dt className="text-muted-foreground">Model</dt><dd className="break-words">{modelName}{model.data?.variant ? ` · ${model.data.variant}` : ''}</dd></div>
-        {work && <div><dt className="text-muted-foreground">Branch</dt><dd className="break-all">{work.branch || 'Not selected'}</dd></div>}
+        {work && <div><dt className="text-muted-foreground">Branch</dt><dd className="break-all">{work.branch || reanchor.data?.branch || 'Not selected'}</dd></div>}
         <div><dt className="text-muted-foreground">{work ? 'Review folder' : 'Folder'}</dt><dd className="break-all font-mono text-xs">{here || 'Unavailable'}</dd></div>
         <div><dt className="text-muted-foreground">Session</dt><dd>{children}</dd></div>
       </dl>
@@ -245,6 +264,7 @@ export function ConversationDetails({ sessionId, directory, work, children }: {
         </div>
         {work && <p className="text-xs text-muted-foreground">This run’s folder and branch follow the guards of its state; a shipped run keeps the checkout it shipped from.</p>}
         {note && <p className="text-xs text-muted-foreground">{note}</p>}
+        {anchorNote && <p className="text-xs text-muted-foreground">{anchorNote}</p>}
         {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
       </div>
     </PopoverContent>

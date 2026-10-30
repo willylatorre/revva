@@ -48,6 +48,7 @@ class ShipManager {
 
   /** Cheap pre-flight; every check says what to fix. ok=true ⇒ Ship is safe. */
   async checks(workId: string): Promise<ShipCheck[]> {
+    await workManager.healCheckoutAnchor(workId)
     const work = this.requireWork(workId)
     const checks: ShipCheck[] = []
     checks.push({
@@ -145,6 +146,7 @@ class ShipManager {
    *  unreviewed commit is audited — the dialog shows the warning; `strict` (AUTO) keeps
    *  the reviewed-commit check fatal because nobody is watching. */
   async ship(workId: string, opts: { strict?: boolean } = {}): Promise<ShipResult> {
+    await workManager.healCheckoutAnchor(workId)
     if (this.shipping.has(workId)) throw new Error('Shipping is already in progress.')
     if (workManager.hasFollowUps(workId) || workManager.isPrompting(workId)) throw new Error('A follow-up is pending. Implement and review it before shipping.')
     this.shipping.add(workId)

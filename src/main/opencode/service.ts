@@ -125,6 +125,25 @@ export class OpenCodeService {
 
 export function describeError(err: unknown): string {
   if (err instanceof Error) return err.message
+  // The OpenCode service reports failures as plain structured objects
+  // (`{ type, message, status?, response? }`, see `SessionStructuredError`); they reach
+  // this function through event payloads and client rejections. Stringifying one would
+  // show "[object Object]" in the review panel, so pull what a human needs from it.
+  if (err && typeof err === 'object') {
+    const e = err as { message?: unknown; type?: unknown; name?: unknown; status?: unknown }
+    const message = typeof e.message === 'string' && e.message.trim() ? e.message.trim() : ''
+    const kind = typeof e.type === 'string' && e.type ? e.type : typeof e.name === 'string' ? e.name : ''
+    const status = typeof e.status === 'number' ? e.status : undefined
+    const prefix = [kind || undefined, status !== undefined ? `HTTP ${status}` : undefined].filter(Boolean).join(' ')
+    if (message) return prefix ? `${message} (${prefix})` : message
+    if (prefix) return prefix
+    try {
+      const json = JSON.stringify(err)
+      if (json && json !== '{}') return json.slice(0, 400)
+    } catch {
+      /* circular — fall through */
+    }
+  }
   return String(err)
 }
 
