@@ -10,6 +10,8 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { jiraAuth, MCP_URL } from './auth'
+/** One Atlassian site from `getAccessibleAtlassianResources`. */
+type AccessibleSite = { id?: string; cloudId?: string; url?: string; products?: Array<{ id?: string }> }
 
 export type JiraTicket = {
   key: string
@@ -169,14 +171,24 @@ export class JiraMcp {
   private async resolveCloudId(): Promise<string> {
     if (this.cloudId) return this.cloudId
     const res = await this.call<unknown>('resources', {})
-    const list = Array.isArray(res)
-      ? res
-      : ((res as { data?: unknown[] })?.data ?? (Array.isArray((res as { resources?: unknown[] })?.resources) ? (res as { resources: unknown[] }).resources : []))
-    const first = list[0] as { id?: string; url?: string } | undefined
-    const id = first?.id ?? (first?.url ? new URL(first.url).host : undefined)
-    if (!id) throw new Error('No accessible Atlassian site for this account.')
+    // v2: `{ data: { resources: [{ cloudId, url, products }] } }` (unwrapped by call()); v1 was a
+    // bare array of `{ id, url }`. Accept either shape rather than trusting one.
+    const r = res as { resources?: unknown[]; data?: unknown[] } | unknown[] | undefined
+    const list = (Array.isArray(r) ? r : (r?.resources ?? r?.data ?? [])) as AccessibleSite[]
+    // Prefer a site that actually has Jira; a Confluence-only site would fail every later call.
+    const site =
+      list.find((s) => s?.products?.some((p) => p?.id === 'jira')) ?? list.find((s) => s?.cloudId || s?.id)
+    const id = site?.cloudId ?? site?.id ?? (site?.url ? safeHost(site.url) : undefined)
+    if (!id) {
+      const shape = res && typeof res === 'object' ? Object.keys(res).join(', ') || 'empty object' : String(res)
+      throw new Error(
+        list.length
+          ? `The accessible Atlassian sites carry no cloudId (got: ${shape}). Revva's Jira call needs updating.`
+          : 'No accessible Atlassian site for this account. Check that the Jira scopes were granted at sign-in.'
+      )
+    }
     this.cloudId = id
-    if (first?.url) this.siteUrl = first.url.replace(/\/$/, '')
+    if (site?.url) this.siteUrl = site.url.replace(/\/$/, '')
     return id
   }
 
@@ -191,27 +203,33 @@ export class JiraMcp {
     const input = this.argsFor(cap, args)
     try {
       const res = await this.client.callTool({ name, arguments: input })
-      return parseToolResult<T>(res)
+      return parseToolResult(res) as T
     } catch (err) {
       // One transparent retry after re-auth covers token rotation.
       try {
         await this.reconnect()
         const res = await this.client!.callTool({ name: this.tool(cap), arguments: this.argsFor(cap, args) })
-        return parseToolResult<T>(res)
+        return parseToolResult(res) as T
       } catch (err2) {
         throw err2 instanceof Error && err2.message.includes('not connected') ? err : err2
       }
     }
   }
 
-  /** JQL search returning raw-ish issue records (mapped later by board.ts). */
+  /**
+   * JQL search returning raw-ish issue records (mapped later by board.ts).
+   *
+   * `view: 'full'` is required when asking for specific fields: v2's default "compact" preset
+   * returns a fixed summary set and quietly ignores `fields`, so sub-tasks, links and parent
+   * would come back missing with no error.
+   */
   async search(jql: string, fields?: string[]): Promise<unknown> {
     const cloudId = await this.resolveCloudId()
     return this.call('search', {
       cloudId,
       jql,
       maxResults: 50,
-      ...(fields ? { fields } : {}),
+      ...(fields ? { view: 'full', fields } : {}),
       responseContentFormat: 'markdown'
     })
   }
@@ -221,7 +239,7 @@ export class JiraMcp {
     return this.call('getIssue', {
       cloudId,
       issueIdOrKey: key,
-      ...(fields ? { fields } : {}),
+      ...(fields ? { view: 'full', fields } : {}),
       responseContentFormat: 'markdown'
     })
   }
@@ -239,10 +257,13 @@ export class JiraMcp {
   /**
    * Comments come from the whole issue rather than v2's `listJiraIssueComments`: that tool is
    * paginated oldest-first, so a long ticket's newest comments could sit past the first page
-   * and the watcher would silently stop seeing them. `fields.comment` is the trusted read.
+   * and the watcher would silently stop seeing them. `fields.comment` is the trusted read —
+   * and must be asked for by name, because v2's default compact view omits it altogether.
    */
   async comments(key: string): Promise<Array<{ id?: string; author?: { displayName?: string; accountId?: string }; body?: unknown; created?: string }>> {
-    const raw = (await this.getIssue(key)) as { fields?: Record<string, unknown> } | { issue?: { fields?: Record<string, unknown> } }
+    const raw = (await this.getIssue(key, ['comment'])) as
+      | { fields?: Record<string, unknown> }
+      | { issue?: { fields?: Record<string, unknown> } }
     const fields = (raw as { fields?: Record<string, unknown> })?.fields ?? (raw as { issue?: { fields?: Record<string, unknown> } })?.issue?.fields
     return commentListFrom(fields?.comment)
   }
@@ -259,9 +280,19 @@ export class JiraMcp {
     return this.cachedAccountId ?? undefined
   }
 
+  /**
+   * v2 renamed the input: flat `transitionId` instead of v1's nested `transition: { id }`. Both
+   * are sent and `argsFor` keeps whichever the discovered schema declares, so a connection whose
+   * site has not rolled over yet still transitions.
+   */
   async transitionIssue(key: string, transitionId: string): Promise<unknown> {
     const cloudId = await this.resolveCloudId()
-    return this.call('transition', { cloudId, issueIdOrKey: key, transition: { id: transitionId } })
+    return this.call('transition', {
+      cloudId,
+      issueIdOrKey: key,
+      transitionId,
+      transition: { id: transitionId }
+    })
   }
 
   inventory(): ToolDef[] {
@@ -331,14 +362,39 @@ export function commentListFrom(v: unknown): JiraComment[] {
 }
 
 /** MCP results come back as content blocks; JSON payloads arrive as text. */
-export function parseToolResult<T>(res: unknown): T {
+export function parseToolResult(res: unknown): unknown {
   const r = res as { isError?: boolean; content?: Array<{ type: string; text?: string }> }
   const text = (r.content ?? []).filter((c) => c.type === 'text').map((c) => c.text ?? '').join('\n')
   if (r.isError) throw new Error(text || 'Atlassian MCP tool error')
   try {
-    return JSON.parse(text) as T
+    return unwrapData(JSON.parse(text))
   } catch {
-    return text as unknown as T
+    return text
+  }
+}
+
+/**
+ * Strips v2's `{ data: … }` result envelope (every v2 tool nests its payload; v1 returned it
+ * bare). Doing this once, at parse time, keeps every downstream read (`fields`, `issues`,
+ * `transitions`, `resources`) version-agnostic — otherwise a renamed envelope reads as
+ * `undefined` and an empty board looks like "no tickets" rather than a broken contract.
+ *
+ * Only a lone `data` key unwraps, so a payload that happens to carry `data` beside other fields
+ * passes through untouched. Verified live 2026-10-30: v2 envelopes are always exactly `{ data }`.
+ */
+function unwrapData<T = unknown>(result: unknown): T {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return result as T
+  const keys = Object.keys(result)
+  if (keys.length !== 1 || keys[0] !== 'data') return result as T
+  return (result as { data: T }).data
+}
+
+/** Host of a site URL, for sites reported by URL rather than by cloudId. */
+function safeHost(url: string): string | undefined {
+  try {
+    return new URL(url).host
+  } catch {
+    return undefined
   }
 }
 

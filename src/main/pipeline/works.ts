@@ -21,7 +21,8 @@ import { sessionIndex } from '../opencode/session-index'
 import { streamBuffer } from '../opencode/stream-buffer'
 import { pushToWindows } from '../push'
 import { notifyInbound } from '../notify'
-import { collectAdfText, fetchLastAssistantText, isConflict, promptImageFiles } from '../util'
+import { fetchLastAssistantText, isConflict, promptImageFiles } from '../util'
+import { jiraBodyToText } from '../jira/rich-text'
 import { reviewManager } from '../review'
 import { shipManager } from '../ship'
 import { throughputMeter } from '../opencode/throughput'
@@ -1204,13 +1205,8 @@ async function defaultBranch(repoDir: string): Promise<string> {
 
 function extractDescription(raw: unknown): string {
   const fields = (raw as { fields?: Record<string, unknown> })?.fields
-  const d = fields?.description
-  if (typeof d === 'string') return d
-  if (d && typeof d === 'object') {
-    // ADF → crude text extraction; rich rendering lands with the UI polish pass.
-    return collectAdfText(d).join('\n')
-  }
-  return ''
+  // v2 hands descriptions back as HTML, legacy content as ADF.
+  return jiraBodyToText(fields?.description)
 }
 
 export const workManager = new WorkManager()

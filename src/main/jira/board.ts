@@ -6,7 +6,7 @@
  */
 import { jiraMcp, commentListFrom, type JiraLink, type JiraTicket } from './mcp'
 import { getDb } from '../db'
-import { collectAdfText } from '../util'
+import { jiraBodyToText } from './rich-text'
 
 const BOARD_JQL =
   "sprint in openSprints() AND assignee = currentUser() AND statusCategory != Done ORDER BY rank ASC"
@@ -23,8 +23,7 @@ function arr(v: unknown): unknown[] {
 }
 
 /** Unwrap common MCP result envelopes to an issue array. */
-function issuesFrom(result: unknown): RawIssue[] {
-  if (Array.isArray(result)) return result as RawIssue[]
+function issuesFrom(result: unknown): RawIssue[] {  if (Array.isArray(result)) return result as RawIssue[]
   const r = result as Record<string, unknown>
   for (const key of ['issues', 'data', 'results']) {
     const v = r?.[key]
@@ -35,6 +34,27 @@ function issuesFrom(result: unknown): RawIssue[] {
     }
   }
   return []
+}
+
+/**
+ * Story points, from either wire format. v1 put custom fields inline on `fields`; v2 nests them
+ * under `fields.customFields`, keyed by the site's **display name** with the id in the value, and
+ * ignores the stable `story_points` name in `fields`. So match by id-or-name across both shapes;
+ * a site whose points field is non-classic still reports nothing, exactly as under v1.
+ */
+function storyPointsFrom(f: Record<string, unknown>): number | undefined {
+  const direct = f.story_points ?? f.storyPoints
+  if (typeof direct === 'number') return direct
+  const cf = (f.customFields ?? {}) as Record<string, { id?: string; value?: unknown }>
+  for (const [key, entry] of Object.entries(cf)) {
+    const id = String(entry?.id ?? key)
+    if (!/point/i.test(key) && id !== 'customfield_10004') continue
+    const v = entry?.value
+    if (typeof v === 'number') return v
+    const n = Number(v)
+    if (v !== null && v !== undefined && Number.isFinite(n)) return n
+  }
+  return undefined
 }
 
 function mapIssue(raw: RawIssue): JiraTicket | undefined {
@@ -70,7 +90,8 @@ function mapIssue(raw: RawIssue): JiraTicket | undefined {
     const p = phrase.toLowerCase()
     if (p.includes('blocked by') || p.includes('depends on')) dependsOn.push(other.key)
   }
-  const points = f.story_points ?? f.storyPoints ?? f['customfield_10004']
+  const points = storyPointsFrom(f)
+
   // Classic projects: parent is an object; team-managed: parent is a one-element array.
   const parent = Array.isArray(f.parent) ? f.parent[0] : f.parent
   const parentKey = (parent as Record<string, unknown> | undefined)?.key
@@ -100,7 +121,10 @@ export async function fetchBoard(): Promise<JiraTicket[]> {
     'issuetype',
     'subtasks',
     'issuelinks',
-    'story_points',
+    // v2 only returns custom fields by their site-specific id; 10004 is Jira's classic
+    // story-points id and is what the board used under v1. Sites with a different points
+    // field show no points, same as before — `view: 'full'` alone would balloon the payload.
+    'customfield_10004',
     'parent'
   ])
   const tickets = issuesFrom(result).map(mapIssue).filter((t): t is JiraTicket => !!t)
@@ -173,19 +197,15 @@ export async function fetchTicketDetail(key: string): Promise<TicketDetail> {
     })
     .filter((t): t is JiraTicket => !!t)
 
-  const description = (() => {
-    const d = fields.description
-    if (typeof d === 'string') return d.trim()
-    if (d && typeof d === 'object') return collectAdfText(d).join('\n').trim()
-    return ''
-  })()
+  const description = jiraBodyToText(fields.description)
 
   const comments = commentListFrom(fields.comment)
     .map((c) => ({
       id: c.id ? String(c.id) : undefined,
       author: c.author?.displayName ?? 'unknown',
-      // Comment bodies are markdown or ADF depending on how they were written.
-      body: typeof c.body === 'string' ? c.body : collectAdfText(c.body).join(' ').trim(),
+      // v2 hands bodies back as HTML (its markdown request is downgraded server-side), older
+      // content as ADF, occasionally markdown — jiraBodyToText sniffs all three.
+      body: jiraBodyToText(c.body, ' '),
       created: c.created
     }))
     .filter((c) => c.body.length > 0)

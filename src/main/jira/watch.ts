@@ -1,11 +1,11 @@
 /**
  * M6 comment watcher: polls Jira for new comments on tickets with a PR, excluding our own.
  *
- * The Atlassian MCP has no "list comments" tool, so comments come from getIssue's
- * fields.comment.comments. A watermark table records which comment ids we've already
- * surfaced; anything newer and not authored by us becomes a "new comments" alert.
- * "Tackle comments" runs a rework session in the worktree; its summary is posted back
- * to Jira as a reply comment and pushed to the open PR.
+ * Comments come from getIssue's fields.comment.comments (v2's listJiraIssueComments paginates
+ * oldest-first, so newest comments could fall off the first page). A watermark table records
+ * which comment ids we've already surfaced; anything newer and not authored by us becomes a
+ * "new comments" alert. "Tackle comments" runs a rework session in the worktree; its summary
+ * is posted back to Jira as a reply comment and pushed to the open PR.
  */
 import { BrowserWindow } from 'electron'
 import { jiraMcp } from './mcp'
@@ -13,7 +13,8 @@ import { getDb, settingGet } from '../db'
 import { sessionIndex } from '../opencode/session-index'
 import { streamBuffer } from '../opencode/stream-buffer'
 import { pushToWindows } from '../push'
-import { collectAdfText, fetchLastAssistantText } from '../util'
+import { jiraBodyToText } from './rich-text'
+import { fetchLastAssistantText } from '../util'
 import { openCodeService, describeError } from '../opencode/service'
 import { skillGuardRules } from '../opencode/skill-guard'
 import { eventBus, type RawEvent } from '../opencode/bus'
@@ -239,10 +240,10 @@ class CommentWatcher {
   }
 }
 
-/** Jira comment bodies are ADF or markdown depending on the tool; extract plain text. */
+/** Jira comment bodies are HTML, ADF or markdown depending on how they were written. */
 function extractText(body: unknown): string {
   // Space join on purpose: comments read as prose (descriptions keep newlines).
-  return typeof body === 'string' ? body : collectAdfText(body).join(' ').trim()
+  return jiraBodyToText(body, ' ')
 }
 
 export const commentWatcher = new CommentWatcher()

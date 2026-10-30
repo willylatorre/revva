@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { chatManager } from './opencode/chats'
 import { getDb, settingGet } from './db'
 import { getTicket } from './jira/board'
-import { collectAdfText } from './util'
+import { jiraBodyToText } from './jira/rich-text'
 import { renderPrompt, DEFAULT_TACKLE_PROMPT } from '@shared/prompts'
 import type { TaskSessionResult } from '@shared/types'
 
@@ -49,11 +49,8 @@ export async function startTicketSession(ticketKey: string, repoDir?: string): P
   return { sessionId: chat.sessionId, title: chat.title, directory: dir }
 }
 
-/** Ticket description as plain text (string or ADF), so the chat opens with the ticket in context. */
+/** Ticket description as plain text (HTML, ADF or markdown), so the chat opens with the ticket in context. */
 function extractDescription(raw: unknown): string {
   const fields = (raw as { fields?: Record<string, unknown> })?.fields
-  const d = fields?.description
-  if (typeof d === 'string') return d
-  if (d && typeof d === 'object') return collectAdfText(d).join('\n')
-  return ''
+  return jiraBodyToText(fields?.description)
 }
