@@ -1,8 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowUp, Bot, Check, ChevronDown, Copy, Cpu, ImageIcon, Square, Tag, X } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import { ArrowUp, Check, ChevronDown, Copy, Cpu, ImageIcon, Square, Tag, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Textarea } from '@/components/ui/textarea'
@@ -17,7 +15,7 @@ import { beginTranscriptSnapshot, displayTranscript, finishTranscriptSnapshot, m
 import { transcriptRequest } from '@/lib/transcript-requests'
 import { SessionStats } from '@/components/session-stats'
 import { AgentsPanel } from '@/components/agents-panel'
-import { TranscriptActivityStrip, TranscriptContent, USER_MD_COMPONENTS, createTranscriptActivityStore } from '@/components/transcript-content'
+import { TranscriptActivityStrip, TranscriptContent, createTranscriptActivityStore } from '@/components/transcript-content'
 import { Choice } from './NewChatDialog'
 import type { AgentInfo, ChatMessage, FileHit, ModelRef, PromptImage, PromptRefs, QueuedMessage, SkillInfo, WorkSummary, TranscriptPage } from '@shared/types'
 import { FormCard, PermissionCard, useInbox } from './InboxView'
@@ -280,7 +278,6 @@ export function TranscriptView({
     setDraft({ sessionId, text })
     qc.setQueryData(draftKey, text)
   }
-  const [preview, setPreview] = useState(false)
 
   /** Images staged in the composer, waiting to be sent with the next message. */
   const [pendingImages, setPendingImages] = useState<PromptImage[]>([])
@@ -350,7 +347,6 @@ export function TranscriptView({
 
   useEffect(() => {
     setPendingImages([])
-    setPreview(false)
   }, [sessionId])
 
   // Main pushes queue/model changes for every session (bus forwards all sessions, so
@@ -363,13 +359,9 @@ export function TranscriptView({
       if (event.kind === 'session.model' && event.sessionId === sessionId) {
         void qc.invalidateQueries({ queryKey: ['session-model', sessionId] })
       }
-      if (event.kind === 'session.agent' && event.sessionId === sessionId) {
-        void qc.invalidateQueries({ queryKey: ['session-agent', sessionId] })
-      }
       if (event.kind === 'session.activity' && event.sessionId === sessionId && !event.running) {
         void qc.invalidateQueries({ queryKey: ['session-queue', sessionId] })
         void qc.invalidateQueries({ queryKey: ['session-model', sessionId] })
-        void qc.invalidateQueries({ queryKey: ['session-agent', sessionId] })
         void qc.invalidateQueries({ queryKey: ['session-context-usage', sessionId] })
       }
     })
@@ -733,18 +725,8 @@ export function TranscriptView({
                 }
                 aria-label="Message"
                 rows={2}
-                hidden={preview}
-                className={cn('max-h-48 min-h-16 resize-none rounded-none border-0 bg-transparent px-4 pb-2 pt-3 shadow-none focus-visible:ring-0 dark:bg-transparent', preview && 'hidden')}
+                className="max-h-48 min-h-16 resize-none rounded-none border-0 bg-transparent px-4 pb-2 pt-3 shadow-none focus-visible:ring-0 dark:bg-transparent"
               />
-              {preview && (
-                <div aria-label="Message preview" className="max-h-48 min-h-16 overflow-auto px-4 pb-2 pt-3 text-sm">
-                  {input ? (
-                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={USER_MD_COMPONENTS}>{input}</ReactMarkdown>
-                  ) : (
-                    <span className="text-muted-foreground">Nothing to preview</span>
-                  )}
-                </div>
-              )}
               <div className="flex min-w-0 items-center gap-1 px-2 pb-2">
                 <input
                   ref={fileInputRef}
@@ -768,19 +750,7 @@ export function TranscriptView({
                 >
                   <ImageIcon />
                 </Button>
-                <Button
-                  type="button"
-                  size="xs"
-                  variant="ghost"
-                  onClick={() => {
-                    setPreview((current) => !current)
-                    setToken(null)
-                    if (preview) requestAnimationFrame(() => textareaRef.current?.focus())
-                  }}
-                >
-                  {preview ? 'Edit' : 'Preview'}
-                </Button>
-                <ComposerRolePickers key={sessionId} sessionId={sessionId} container={composerRef} />
+                <ComposerModelPickers key={sessionId} sessionId={sessionId} container={composerRef} />
                 {running && (
                   <Button type="button" size="icon-sm" variant="outline" className="ml-auto" aria-label="Stop response" title="Stop response" onClick={() => interrupt.mutate()}>
                     <Square />
@@ -854,37 +824,28 @@ export function RunningBadge({ running }: { running: boolean }): React.JSX.Eleme
 
 /* ---------- composer model/agent pickers ---------- */
 
-/** Model + agent dropdowns in the composer footer: switch mid-conversation, applies
- *  to subsequent turns (OpenCode switchModel/switchAgent — history is untouched). */
-function ComposerRolePickers({ sessionId, container }: {
+/** Model + effort dropdowns in the composer footer: switch mid-conversation, applies
+ *  to subsequent turns (OpenCode switchModel — history is untouched). The coordinator is
+ *  chosen when the conversation starts, not here. */
+function ComposerModelPickers({ sessionId, container }: {
   sessionId: string
   /** Composer element the menus portal into, so they stay anchored to it. */
   container: React.RefObject<HTMLElement | null>
 }): React.JSX.Element {
   const qc = useQueryClient()
   const [modelOpen, setModelOpen] = useState(false)
-  const [agentOpen, setAgentOpen] = useState(false)
   const [search, setSearch] = useState('')
-  const agents = useQuery({ queryKey: ['agents', sessionId], queryFn: () => window.revva.inventory.agents(sessionId), staleTime: 60_000, enabled: agentOpen })
   const models = useQuery({ queryKey: ['models'], queryFn: () => window.revva.inventory.models(), staleTime: 60_000, enabled: modelOpen })
   const model = useQuery({ queryKey: ['session-model', sessionId], queryFn: () => window.revva.session.model(sessionId) })
-  const agent = useQuery({ queryKey: ['session-agent', sessionId], queryFn: () => window.revva.session.agent(sessionId) })
   const switchModel = useMutation({
     mutationFn: (ref: ModelRef) => window.revva.session.setModel(sessionId, ref),
     onSuccess: () => void qc.invalidateQueries({ queryKey: ['session-model', sessionId] })
   })
-  const switchAgent = useMutation({
-    mutationFn: (agentID: string) => window.revva.session.setAgent(sessionId, agentID),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ['session-agent', sessionId] })
-  })
-  const error = switchModel.error ?? switchAgent.error
+  const error = switchModel.error
 
   const currentModel = model.data
     ? models.data?.find((m) => m.providerID === model.data?.providerID && m.id === model.data?.id)?.name || model.data.id
     : 'Model: default'
-  const currentAgent = agent.data
-    ? agents.data?.find((a) => a.id === agent.data)?.name || agent.data
-    : 'Coordinator: default'
   const effortVariants = model.data?.variants ?? []
   const currentEffort = model.data?.variant && effortVariants.includes(model.data.variant)
     ? model.data.variant
@@ -908,8 +869,7 @@ function ComposerRolePickers({ sessionId, container }: {
       />
     )
   }
-  const agentMatches = (agents.data ?? []).filter((a) => a.mode !== 'subagent' && (!q || `${a.name ?? ''} ${a.id}`.toLowerCase().includes(q)))
-  const busy = switchModel.isPending || switchAgent.isPending
+  const busy = switchModel.isPending
 
   return (
     <>
@@ -941,36 +901,6 @@ function ComposerRolePickers({ sessionId, container }: {
               </>
             )}
             {modelMatches.length === 0 && <p role={models.isError ? 'alert' : 'status'} className="px-2 py-1.5 text-xs text-muted-foreground">{models.isPending ? 'Loading models…' : models.isError ? 'Couldn’t load models. Close and reopen to retry.' : 'No models match.'}</p>}
-          </div>
-        </PopoverContent>
-      </Popover>
-      <Popover open={agentOpen} onOpenChange={(next) => { setAgentOpen(next); if (!next) setSearch('') }}>
-        <PopoverTrigger
-          render={<Button type="button" size="xs" variant="ghost" className="min-w-0 max-w-40" aria-label="Switch coordinator for this conversation" disabled={busy} />}
-        >
-          <Bot data-icon="inline-start" />
-          <span className="truncate">{currentAgent}</span>
-          <ChevronDown data-icon="inline-end" />
-        </PopoverTrigger>
-        <PopoverContent container={container} align="start" className="w-72 max-w-[calc(100vw-2rem)] gap-2 p-3">
-          <PopoverTitle>Switch coordinator</PopoverTitle>
-          <p className="text-[11px] text-muted-foreground">Applies to the next turn; this conversation keeps its history.</p>
-          <Input aria-label="Search agents" placeholder="Search agents…" value={search} onChange={(e) => setSearch(e.target.value)} className="h-7 text-xs" />
-          <div className="max-h-64 overflow-y-auto">
-            {agentMatches.map((a) => {
-              const active = agent.data === a.id
-              return (
-                <Choice
-                  key={a.id}
-                  label={a.name || a.id}
-                  detail={a.id}
-                  disabled={active}
-                  selected={active}
-                  onClick={() => { switchAgent.mutate(a.id); setAgentOpen(false) }}
-                />
-              )
-            })}
-            {agentMatches.length === 0 && <p role={agents.isError ? 'alert' : 'status'} className="px-2 py-1.5 text-xs text-muted-foreground">{agents.isPending ? 'Loading agents…' : agents.isError ? 'Couldn’t load agents. Close and reopen to retry.' : 'No agents match.'}</p>}
           </div>
         </PopoverContent>
       </Popover>
