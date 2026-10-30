@@ -45,6 +45,12 @@ interface Cursor {
 // Retained for the comment watcher transport; the shared bus now owns all detail.
 export interface DeltaSource { kind: 'chat.delta' | 'work.delta' | 'review.delta'; sessionId: string; messageId: string; text: string; workId?: string }
 
+/** Proven coverage of one native tool lifecycle event by the compact update
+ *  that was queued and synchronously flushed on the same channel the bus
+ *  pushes its `chat.tool` hint over. Absent means the renderer must keep
+ *  refreshing on that hint. */
+export interface ToolLifecycleCoverage { messageId: string; toolId: string }
+
 class StreamBuffer {
   private cursors = new Map<string, Cursor>()
   private pending = new Map<string, { updates: TranscriptUpdate[]; bytes: number; receivedAt: number }>()
@@ -161,18 +167,26 @@ class StreamBuffer {
 
   push(_source: DeltaSource): void { /* Native text events are handled once in onEvent. */ }
 
-  onEvent(event: RawEvent): void {
+  /**
+   * Returns proven coverage of a native tool lifecycle event whose compact
+   * update was queued and synchronously flushed to observing windows on the
+   * same IPC.eventPush channel the bus pushes its `chat.tool` hint over — and
+   * only when the update reached the renderer's authoritative prefix (known
+   * cursor, retained batch). Null means the `chat.tool` hint must keep the
+   * unconditional history refresh.
+   */
+  onEvent(event: RawEvent): ToolLifecycleCoverage | null {
     const data = event.data ?? {}
     const sessionId = data.sessionID
-    if (typeof sessionId !== 'string') return
-    if (event.type === 'session.deleted') { this.reset(sessionId); return }
+    if (typeof sessionId !== 'string') return null
+    if (event.type === 'session.deleted') { this.reset(sessionId); return null }
     if (['session.execution.succeeded', 'session.execution.failed', 'session.execution.interrupted', 'session.idle'].includes(event.type)) {
       for (const prefix of this.prefixes.values()) if (prefix.sessionId === sessionId) prefix.expires ??= Date.now() + COMPLETED_PREFIX_TTL_MS
       for (const [key, cursor] of this.cursors) if (key.startsWith(`${sessionId}:`)) cursor.completed = true
-      return
+      return null
     }
     const messageId = data.assistantMessageID
-    if (typeof messageId !== 'string') return
+    if (typeof messageId !== 'string') return null
     const key = `${sessionId}:${messageId}`
     if (event.type === 'session.step.started') {
       const createdAt = typeof data.started === 'number' ? data.started : Date.now()
@@ -189,16 +203,16 @@ class StreamBuffer {
         this.prefixes.set(key, { sessionId, message, bytes: 512 })
         this.boundPrefixes(key, 0)
       }
-      return
+      return null
     }
     if (event.type === 'session.step.ended' || event.type === 'session.step.failed') {
       const prefix = this.prefixes.get(key)
       if (prefix) prefix.expires = Date.now() + COMPLETED_PREFIX_TTL_MS
       const cursor = this.cursors.get(key)
       if (cursor) cursor.completed = true
-      return
+      return null
     }
-    if (!/^(session\.(text|reasoning|tool)\.)/.test(event.type)) return
+    if (!/^(session\.(text|reasoning|tool)\.)/.test(event.type)) return null
     let cursor = this.cursors.get(key)
     if (!cursor) {
       this.dropPrefix(key)
@@ -213,7 +227,7 @@ class StreamBuffer {
     const field = event.type.startsWith('session.text.') ? 'text' : 'thinking'
     const partId = `${field}:${String(data.ordinal)}`
     if (event.type === 'session.text.delta' || event.type === 'session.reasoning.delta') {
-      if (typeof data.delta !== 'string') return
+      if (typeof data.delta !== 'string') return null
       const offset = cursor[field]
       if (!cursor.offsets.has(partId)) cursor.offsets.set(partId, offset)
       cursor[field] += data.delta.length
@@ -224,7 +238,7 @@ class StreamBuffer {
         messageId, partId, field, offset,
         text: data.delta, createdAt: cursor.createdAt
       })
-      return
+      return null
     }
     if (event.type === 'session.text.ended' || event.type === 'session.reasoning.ended') {
       if (cursor.known && typeof data.text === 'string') {
@@ -245,7 +259,7 @@ class StreamBuffer {
           this.boundPrefixes(key, previousBytes)
           this.pending.delete(sessionId)
           transcriptSubscriptions.reset(sessionId)
-          return
+          return null
         }
         if (data.text.length < received) { cursor.known = false; this.dropPrefix(key) }
         else if (data.text.length > received) {
@@ -255,9 +269,9 @@ class StreamBuffer {
         }
       }
       if (!cursor.known && transcriptSubscriptions.observed(sessionId)) transcriptSubscriptions.reset(sessionId)
-      return
+      return null
     }
-    if (!event.type.startsWith('session.tool.') || typeof data.id !== 'string') return
+    if (!event.type.startsWith('session.tool.') || typeof data.id !== 'string') return null
     const id = data.id
     const inputPart = `tool:${id}`
     if (typeof data.name === 'string') {
@@ -288,19 +302,28 @@ class StreamBuffer {
       tool = { id, name, state: event.type.endsWith('success') ? 'completed' : 'error', output: output === undefined ? undefined : summary(output) }
     }
     if (tool) {
-      this.queue(sessionId, { messageId, partId: id, field: 'tool', tool, createdAt: cursor.createdAt })
+      const retained = this.queue(sessionId, { messageId, partId: id, field: 'tool', tool, createdAt: cursor.createdAt })
       this.flush(sessionId)
+      // Only a hint for a lifecycle state this exact window received first is
+      // suppressible; the synchronous flush above precedes the bus's chat.tool
+      // push on the same IPC channel. input.started has no hint at all, so
+      // claiming coverage there would strand it unconsumed.
+      const lifecycle = event.type === 'session.tool.called' || event.type === 'session.tool.success' || event.type === 'session.tool.failed'
+      return retained && cursor.known && lifecycle ? { messageId, toolId: id } : null
     } else if (event.type === 'session.tool.input.delta' && typeof data.delta === 'string' && inputOffset !== undefined) {
       this.queue(sessionId, { messageId, partId: id, field: 'tool', offset: inputOffset, text: data.delta, createdAt: cursor.createdAt })
     } else if (event.type === 'session.tool.input.ended' && typeof data.text === 'string' && inputOffset !== undefined && data.text.length > inputOffset) {
       this.queue(sessionId, { messageId, partId: id, field: 'tool', offset: inputOffset, text: data.text.slice(inputOffset), createdAt: cursor.createdAt })
       cursor.parts.set(inputPart, data.text.length)
     }
+    return null
   }
 
-  private queue(sessionId: string, update: TranscriptUpdate): void {
+  /** True when the update was enqueued into a retained batch (not dropped by
+   *  the pending budget, which resets subscribers instead). */
+  private queue(sessionId: string, update: TranscriptUpdate): boolean {
     this.remember(sessionId, update)
-    if (!transcriptSubscriptions.observed(sessionId)) return
+    if (!transcriptSubscriptions.observed(sessionId)) return false
     const entry = this.pending.get(sessionId) ?? { updates: [], bytes: 0, receivedAt: performance.now() }
     const previous = entry.updates.at(-1)
     if (previous && !previous.tool && !update.tool && previous.messageId === update.messageId && previous.partId === update.partId && previous.field === update.field && update.offset === (previous.offset ?? 0) + (previous.text?.length ?? 0)) {
@@ -311,12 +334,13 @@ class StreamBuffer {
     if (entry.bytes > 1024 * 1024 || entry.updates.length > 512) {
       this.pending.delete(sessionId)
       transcriptSubscriptions.reset(sessionId)
-      return
+      return false
     }
     this.timer ??= setTimeout(() => {
       this.timer = undefined
       for (const id of this.pending.keys()) this.flush(id)
     }, 50)
+    return true
   }
 
   flush(sessionId: string): void {
