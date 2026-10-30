@@ -521,10 +521,14 @@ class ChatManager {
       }
       case 'session.moved': {
         // A move by any client must heal the index; otherwise utilities and the
-        // composer keep offering the old folder.
+        // composer keep offering the old folder. A linked run's review anchor heals
+        // with it, so review follows the conversation instead of blocking on the
+        // folder it happened to see last (the checks live in `healCheckoutAnchor`).
         void openCodeService.api.session.get({ sessionID: sessionId }).then((session) => {
           getDb().prepare('UPDATE chat SET directory = ? WHERE session_id = ?').run(session.location.directory, sessionId)
           pushToWindows({ kind: 'chat.idle', sessionId })
+          const work = getDb().prepare('SELECT id FROM work WHERE session_id = ? ORDER BY updated_at DESC LIMIT 1').get(sessionId) as { id: string } | undefined
+          if (work) void workManager.healCheckoutAnchor(work.id).catch(() => undefined)
         }).catch(() => undefined)
         break
       }

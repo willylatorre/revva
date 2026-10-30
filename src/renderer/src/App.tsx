@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import {
   MessageSquare,
   Plus,
@@ -127,7 +128,12 @@ export default function App(): React.JSX.Element {
         // event immediately, then fetch the other sessions if none were known.
         if (!hadSnapshot) void qc.invalidateQueries({ queryKey: ['session-activity'] })
       }
-      if (event.kind === 'work.updated') void works.refetch()
+      if (event.kind === 'work.updated') {
+        void works.refetch()
+        // A repair main made on its own (e.g. review re-anchored to the conversation's
+        // new checkout) explains itself here; the refetch alone would look like magic.
+        if (event.note) toast.message(event.note)
+      }
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [qc])

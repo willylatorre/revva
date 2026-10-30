@@ -413,29 +413,93 @@ class WorkManager {
   }
 
   /**
-   * Re-read a work row's checkout from git when the row never recorded one.
+   * Re-read a work row's checkout from git when the row drifted from a real checkout.
    *
-   * The drift this exists for: “Chat with this PR” opens the conversation *before*
+   * The first drift this existed for: “Chat with this PR” opens the conversation *before*
    * the PR worktree exists, so the row anchors with an empty branch — and review,
    * shipping and the Details pickers then compare git against that blank forever
    * (“Choose the conversation's Git worktree and check out a branch”, with nothing
    * left to pick). When the folder has since become a real checkout on a branch,
-   * adopt what git says: folder, repository, branch. Only a row that recorded no
-   * branch at all is healed — a row that *had* one and drifted stays under the
-   * explicit “re-select the review folder” guard, so review can never silently
-   * switch what it audits. Anchor fields only; a detached or still-missing
-   * checkout changes nothing, and a row mid-review, mid-ship or mid-prompt is left alone.
-   * Returns the row when it was corrected.
+   * adopt what git says: folder, repository, branch.
+   *
+   * The second drift: the conversation's OpenCode session moved to another checkout —
+   * by Revva's own picker when its post-move re-read failed, by another client, or by
+   * the agent itself (`session_move`, which it is told to consider after creating a
+   * worktree). Revva used to answer that with “The implementation conversation moved to
+   * another checkout. Re-select the review folder and re-run review”, making the human
+   * redo bookkeeping the session can answer directly: it knows where it works. So follow
+   * it, with git as the authority and the same checks the manual “re-select the review
+   * folder” action runs — see `followSessionCheckout`.
+   *
+   * A row mid-review, mid-ship or mid-prompt is left alone either way: an in-flight round
+   * must not switch folders underneath the reviewers. Returns the row when it was corrected.
    */
   async healCheckoutAnchor(workId: string): Promise<WorkSummary | undefined> {
     const row = getDb().prepare('SELECT * FROM work WHERE id = ?').get(workId) as WorkRow | undefined
-    if (!row || row.branch || row.state === 'ABANDONED' || row.state === 'SHIPPED') return undefined
+    if (!row || row.state === 'ABANDONED' || row.state === 'SHIPPED') return undefined
     if (reviewManager.isBusyReviewing(row.id) || shipManager.isShipping(row.id) || this.isPrompting(row.id)) return undefined
+    if (row.branch) return this.followSessionCheckout(row)
     const found = await probeCheckout(row.worktree_dir)
     if (!found || !found.branch) return undefined
-    getDb().prepare('UPDATE work SET repo_dir = ?, worktree_dir = ?, branch = ?, blocker = NULL, updated_at = ? WHERE id = ?')
-      .run(found.repoDir, found.worktreeDir, found.branch, Date.now(), row.id)
-    this.emit(row.id, row.state as WorkState)
+    return this.reanchor(row, found, 'its folder became a checkout after it was anchored')
+  }
+
+  /**
+   * Re-anchor a run that recorded a branch onto the checkout its own conversation now
+   * works in, because the session moved: the review scope of an attached conversation *is*
+   * where that conversation works, which is exactly what re-selecting the folder by hand
+   * re-reads from git. Refusals return `undefined` and change nothing, leaving whatever
+   * explanation review then reports:
+   *
+   * - Only a run whose folder Revva did **not** create follows. A ticket pipeline owns its
+   *   worktree, and review there means *that* folder: a session that left it has to come
+   *   back or be pointed at a folder in Details, because following silently would audit a
+   *   folder that never held the ticket's work.
+   * - A PR-linked run may only move inside the PR's own repository and branch.
+   * - The target must be a checkout with a branch attached. Detached or missing, the
+   *   existing guidance (“check out a branch”, “choose a Git repository”) is the
+   *   actionable one, so a half-read target must not overwrite it.
+   * - Saved follow-ups wait: they are about to be implemented, and the implementation
+   *   should land where the row already says it will.
+   *
+   * The pinned scope of the finished round goes with the old folder — it does not describe
+   * this checkout, so a re-run re-pins it from git rather than resuming old findings.
+   */
+  private async followSessionCheckout(row: WorkRow): Promise<WorkSummary | undefined> {
+    if (!row.session_id || row.owns_worktree !== 0 || this.hasFollowUps(row.id)) return undefined
+    if (!openCodeService.connected) return undefined
+    const session = await openCodeService.api.session.get({ sessionID: row.session_id }).catch(() => undefined)
+    if (!session) return undefined
+    const found = await probeCheckout(session.location.directory)
+    if (!found || !found.branch) return undefined
+    if (found.worktreeDir === (await realpath(row.worktree_dir).catch(() => row.worktree_dir)) && found.branch === row.branch) return undefined
+    if (row.pr_url && (found.repoDir !== row.repo_dir || found.branch !== row.branch)) return undefined
+    return this.reanchor(row, found, `followed the conversation’s session to ${found.branch}`)
+  }
+
+  /** The one write both heals share: anchor fields, cleared blocker, audit line, refresh. */
+  private reanchor(
+    row: WorkRow,
+    found: { worktreeDir: string; repoDir: string; branch: string },
+    why: string
+  ): WorkSummary {
+    const now = Date.now()
+    const moved = found.worktreeDir !== row.worktree_dir || found.branch !== row.branch
+    getDb()
+      .prepare(
+        `UPDATE work SET repo_dir = ?, worktree_dir = ?, branch = ?, blocker = NULL,
+           review_head = NULL, review_base = NULL, updated_at = ? WHERE id = ?`
+      )
+      .run(found.repoDir, found.worktreeDir, found.branch, now, row.id)
+    getDb()
+      .prepare('INSERT INTO auto_decision(work_id, round, kind, detail, created_at) VALUES(?,?,?,?,?)')
+      .run(row.id, null, 're-anchor', `${row.worktree_dir}@${row.branch || '(no branch)'} → ${found.worktreeDir}@${found.branch}: ${why}`, now)
+    console.log(`[work:re-anchor] ${row.id}: ${row.worktree_dir} → ${found.worktreeDir} on ${found.branch} (${why})`)
+    // The row may sit in WAITING_HUMAN carrying the very error this just repaired; the
+    // cleared blocker and refreshed row ride the usual work.updated push. A run that
+    // actually moved says so in a note, so review never appears to audit elsewhere silently.
+    const note = moved ? `Review now points at the conversation’s checkout: ${found.worktreeDir} on ${found.branch}` : undefined
+    this.emit(row.id, row.state as WorkState, note)
     return this.toSummary(getDb().prepare('SELECT * FROM work WHERE id = ?').get(row.id) as WorkRow)
   }
 
@@ -711,8 +775,8 @@ class WorkManager {
     }
   }
 
-  private emit(id: string, state: WorkState): void {
-    pushToWindows({ kind: 'work.updated', workId: id, state })
+  private emit(id: string, state: WorkState, note?: string): void {
+    pushToWindows({ kind: 'work.updated', workId: id, state, note })
   }
 
   private workBySession(sessionId: string): WorkRow | undefined {

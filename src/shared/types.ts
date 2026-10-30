@@ -895,7 +895,8 @@ export const pushEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('session.throughput'), items: z.array(throughputSnapshotSchema) }),
   /** Latest execution activity for delegated children, coalesced to ~1/s. */
   z.object({ kind: z.literal('agent.activity'), items: z.array(agentActivitySchema) }),
-  z.object({ kind: z.literal('work.updated'), workId: z.string(), state: workStateSchema }),
+  /** `note` explains a repair the row made on its own (an auto re-anchor); the renderer toasts it. */
+  z.object({ kind: z.literal('work.updated'), workId: z.string(), state: workStateSchema, note: z.string().optional() }),
   z.object({ kind: z.literal('work.queue'), workId: z.string() }),
   z.object({ kind: z.literal('work.delta'), workId: z.string(), sessionId: z.string(), messageId: z.string(), text: z.string() }),
   z.object({ kind: z.literal('inbox'), items: z.array(pendingItemSchema) }),
