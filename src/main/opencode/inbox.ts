@@ -46,9 +46,18 @@ class InboxManager extends EventEmitter {
   }
 
   list(): PendingItem[] {
+    const parent = getDb().prepare('SELECT parent_id FROM agent_session WHERE session_id = ?')
     const root = getDb().prepare('SELECT root_id FROM agent_session WHERE session_id = ?')
-    return [...this.pending.values()].map((item) => ({ ...item, rootId: (root.get(item.sessionID) as { root_id: string } | undefined)?.root_id }))
-      .sort((a, b) => a.createdAt - b.createdAt)
+    return [...this.pending.values()].map((item) => {
+      // Ancestor chain (root → direct parent) lets the UI mark which branch waits.
+      const branch: string[] = []
+      let step = parent.get(item.sessionID) as { parent_id: string } | undefined
+      while (step && !branch.includes(step.parent_id) && branch.length < 20) {
+        branch.unshift(step.parent_id)
+        step = parent.get(step.parent_id) as { parent_id: string } | undefined
+      }
+      return { ...item, rootId: (root.get(item.sessionID) as { root_id: string } | undefined)?.root_id, branch: branch.length ? branch : undefined }
+    }).sort((a, b) => a.createdAt - b.createdAt)
   }
 
   /** Drop questions belonging to a review that is no longer being tracked. */

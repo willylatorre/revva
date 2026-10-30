@@ -61,9 +61,20 @@ export function ChildAgentActivity({ sessionId, renderTranscript }: {
   })
   const rows = children.data ?? []
   const waiting = inbox.filter((item) => item.rootId === sessionId)
-  const status = (row: AgentSession): string => inbox.some((item) => item.sessionID === row.sessionId) ? 'Needs you'
+  /** Does this agent wait on you directly, or does one of its descendants? */
+  const waitsOn = (id: string): { self: boolean; below: boolean } => ({
+    self: inbox.some((item) => item.sessionID === id),
+    below: inbox.some((item) => item.branch?.includes(id))
+  })
+  const status = (row: AgentSession): string => waitsOn(row.sessionId).self ? 'Needs you'
     : activity.data?.includes(row.sessionId) ? 'Running'
       : row.outcome === 'failed' ? 'Failed' : row.outcome === 'interrupted' ? 'Stopped' : row.outcome === 'succeeded' ? 'Finished' : 'Ready'
+  const rowIcon = (row: AgentSession, label: string): ReactNode => {
+    if (label === 'Running') return <Loader2 className="size-3.5 shrink-0 motion-safe:animate-spin" />
+    if (label === 'Needs you' || label === 'Failed') return <CircleAlert className="size-3.5 shrink-0 text-status-warning" />
+    if (waitsOn(row.sessionId).below) return <CircleAlert className="size-3.5 shrink-0 text-status-warning/60" aria-label="A delegated agent below needs you" />
+    return <Bot className="size-3.5 shrink-0" />
+  }
 
   if (!rows.length && !children.isError) return null
   return <section aria-label="Delegated agents" className="shrink-0 border-t px-3 py-2 sm:px-6">
@@ -78,11 +89,12 @@ export function ChildAgentActivity({ sessionId, renderTranscript }: {
         <div className="mt-1 flex max-h-32 flex-col overflow-y-auto">
           {rows.map((row) => {
             const label = status(row)
-            return <Button key={row.sessionId} type="button" variant="ghost" className="h-auto min-w-0 justify-start px-2 py-2 text-xs" aria-label={`${row.title}: ${label}. Open agent output`} onClick={(event) => {
+            const below = !waitsOn(row.sessionId).self && waitsOn(row.sessionId).below
+            return <Button key={row.sessionId} type="button" variant="ghost" className="h-auto min-w-0 justify-start px-2 py-2 text-xs" aria-label={`${row.title}: ${label}${below ? ' (a delegated agent below needs you)' : ''}. Open agent output`} onClick={(event) => {
               trigger.current = event.currentTarget
               setPath([row])
             }}>
-              {label === 'Running' ? <Loader2 className="size-3.5 shrink-0 motion-safe:animate-spin" /> : label === 'Needs you' || label === 'Failed' ? <CircleAlert className="size-3.5 shrink-0 text-status-warning" /> : <Bot className="size-3.5 shrink-0" />}
+              {rowIcon(row, label)}
               <span className="min-w-0 flex-1 truncate text-left" title={row.title}>{row.title}</span>
               {row.agentID && <span className="max-w-32 truncate text-muted-foreground">{row.agentID}</span>}
               <span className="shrink-0 text-muted-foreground">{label}</span>
@@ -98,20 +110,26 @@ export function ChildAgentActivity({ sessionId, renderTranscript }: {
           <DialogTitle>{selected?.title ?? 'Agent output'}</DialogTitle>
           <DialogDescription>{selected ? `${status(selected)}${selected.agentID ? ` · ${selected.agentID}` : ''}. Send follow-ups through the coordinator.` : 'This child session is no longer available.'}</DialogDescription>
         </DialogHeader>
-        {path.length > 1 && <Button type="button" size="sm" variant="ghost" className="self-start" onClick={() => { setPath((current) => current.slice(0, -1)); stop.reset() }}>Back to {path.at(-2)?.title}</Button>}
-        {selected && activity.data?.includes(selected.sessionId) && <Button type="button" size="sm" variant="outline" className="self-start" disabled={stop.isPending} onClick={() => stop.mutate(selected.sessionId)}>{stop.isPending ? 'Stopping…' : 'Stop agent'}</Button>}
-        {stop.error && <p role="alert" className="text-xs text-destructive">{stop.error.message}</p>}
-        {selected && <div className="max-h-[25vh] shrink-0 overflow-y-auto">
-          {inbox.filter((item) => item.sessionID === selected.sessionId).map((item) => item.kind === 'form' ? <FormCard key={item.id} item={item} /> : <PermissionCard key={item.id} item={item} />)}
-        </div>}
-        {selected && (descendants.data?.length || descendants.isError) ? <section aria-label="Delegated agents" className="max-h-32 shrink-0 overflow-y-auto border-b pb-2">
-          <p className="text-xs font-medium">Delegated agents</p>
-          {descendants.data?.map((row) => <Button key={row.sessionId} type="button" variant="ghost" className="h-auto w-full min-w-0 justify-start px-2 py-2 text-xs" onClick={() => { setPath((current) => [...current, row]); stop.reset() }}>
-            <Bot className="size-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate text-left">{row.title}</span><span className="shrink-0 text-muted-foreground">{status(row)}</span>
-          </Button>)}
-          {descendants.isError && <p role="alert" className="text-xs text-destructive">Could not load delegated agents. <Button size="xs" variant="outline" onClick={() => void descendants.refetch()}>Retry</Button></p>}
-        </section> : null}
-        {selected && renderTranscript(selected)}
+        {path.length > 1 && <Button type="button" size="sm" variant="ghost" className="self-start shrink-0" onClick={() => { setPath((current) => current.slice(0, -1)); stop.reset() }}>Back to {path.at(-2)?.title}</Button>}
+        {selected && activity.data?.includes(selected.sessionId) && <Button type="button" size="sm" variant="outline" className="self-start shrink-0" disabled={stop.isPending} onClick={() => stop.mutate(selected.sessionId)}>{stop.isPending ? 'Stopping…' : 'Stop agent'}</Button>}
+        {stop.error && <p role="alert" className="text-xs text-destructive shrink-0">{stop.error.message}</p>}
+        {/* Requests and descendants share one shrinkable band, so the transcript below always keeps its reserved space. */}
+        {selected && (
+          <div className="min-h-0 shrink overflow-y-auto">
+            {inbox.filter((item) => item.sessionID === selected.sessionId).map((item) => item.kind === 'form' ? <FormCard key={item.id} item={item} /> : <PermissionCard key={item.id} item={item} />)}
+            {descendants.data?.length || descendants.isError ? <section aria-label="Delegated agents" className="border-b pb-2">
+              <p className="text-xs font-medium">Delegated agents</p>
+              {descendants.data?.map((row) => {
+                const label = status(row)
+                return <Button key={row.sessionId} type="button" variant="ghost" className="h-auto w-full min-w-0 justify-start px-2 py-2 text-xs" onClick={() => { setPath((current) => [...current, row]); stop.reset() }}>
+                  {rowIcon(row, label)}<span className="min-w-0 flex-1 truncate text-left">{row.title}</span><span className="shrink-0 text-muted-foreground">{label}</span>
+                </Button>
+              })}
+              {descendants.isError && <p role="alert" className="text-xs text-destructive">Could not load delegated agents. <Button size="xs" variant="outline" onClick={() => void descendants.refetch()}>Retry</Button></p>}
+            </section> : null}
+          </div>
+        )}
+        {selected && <div className="flex min-h-[45%] min-w-0 flex-1 flex-col">{renderTranscript(selected)}</div>}
       </DialogContent>
     </Dialog>
   </section>

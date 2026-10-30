@@ -683,6 +683,8 @@ export const pendingItemSchema = z.object({
   sessionID: z.string(),
   /** Root conversation for a delegated agent request. */
   rootId: z.string().optional(),
+  /** Ancestor sessions from the root down to the direct parent; locates nested requests. */
+  branch: z.array(z.string()).optional(),
   title: z.string(),
   directory: z.string(),
   createdAt: z.number(),

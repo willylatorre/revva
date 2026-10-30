@@ -138,7 +138,8 @@ class Coordinator {
         { action: `${this.name}_read_conversation`, resource: '*', effect: 'allow' }
       ]
       if (JSON.stringify(permissions) !== JSON.stringify(session.permissions)) await openCodeService.api.session.update({ sessionID: sessionId, permissions }, { signal })
-      await openCodeService.api.session.instructions.entry.put({ sessionID: sessionId, key: 'revva.reviewThreads', value: reviewTranscriptInstructions(context) }, { signal })
+      // Instruction keys must match ^[a-z0-9][a-z0-9._-]*$ — camelCase is rejected.
+      await openCodeService.api.session.instructions.entry.put({ sessionID: sessionId, key: 'revva.review-threads', value: reviewTranscriptInstructions(context) }, { signal })
     } catch (error) {
       // The handoff already contains the findings. Optional tool access must not fail a gate.
       console.warn('[review] transcript context unavailable:', describeError(error))
@@ -203,8 +204,8 @@ class Coordinator {
     if (review && (write || toolName !== 'read_conversation')) throw new Error('Controlled reviewers/fixers may only read their assigned related threads.')
     if (!sessionId || (!review && !agentSessions.rootOf(sessionId))) throw new Error('Only Revva conversations and their active agents can use these tools.')
     const session = await openCodeService.api.session.get({ sessionID: sessionId })
-    if (canonical(session.location.directory) !== directory) throw new Error('This conversation has moved to another checkout. Reopen it in Revva.')
-    if (review && canonical(review.directory) !== directory) throw new Error('Review session is outside its assigned checkout.')
+    await this.requireCheckout(session, directory, 'This conversation has moved to another checkout. Reopen it in Revva.')
+    if (review && !(await this.sameCheckout(review.directory, directory))) throw new Error('Review session is outside its assigned checkout.')
     if (write) {
       const meta = session.metadata?.revva
       if (meta && typeof meta === 'object' && !Array.isArray(meta) && meta.readOnly === true) throw new Error('Read-only helpers cannot launch or message agents.')
@@ -233,14 +234,23 @@ class Coordinator {
     this.requireWritable(sessionId)
   }
 
+  /** Two directories count as one scope when git resolves them to the same checkout top level. */
+  private async sameCheckout(a: string, b: string): Promise<boolean> {
+    if (a === b) return true
+    const [topA, topB] = await Promise.all([checkoutTopLevel(a).catch(() => undefined), checkoutTopLevel(b).catch(() => undefined)])
+    return !!topA && topA === topB
+  }
+
+  private async requireCheckout(session: SessionInfo, directory: string, message: string): Promise<void> {
+    if (await this.sameCheckout(session.location.directory, directory)) return
+    throw new Error(message)
+  }
+
   private async target(sessionId: string, directory: string): Promise<SessionInfo> {
     const known = agentSessions.rootOf(sessionId) || getDb().prepare('SELECT id FROM review WHERE session_id = ?').get(sessionId)
     if (!known) throw new Error('Conversation is not indexed by Revva.')
     const session = await openCodeService.api.session.get({ sessionID: sessionId })
-    if (canonical(session.location.directory) !== directory) {
-      const [targetRoot, callerRoot] = await Promise.all([checkoutTopLevel(session.location.directory), checkoutTopLevel(directory)])
-      if (targetRoot !== callerRoot) throw new Error('Conversation belongs to another checkout. Cross-checkout access is not allowed.')
-    }
+    await this.requireCheckout(session, directory, 'Conversation belongs to another checkout. Cross-checkout access is not allowed.')
     return session
   }
 
@@ -272,10 +282,13 @@ class Coordinator {
         const rows = getDb().prepare(`SELECT session_id, title, directory FROM chat
           UNION SELECT session_id, title, directory FROM agent_session
           UNION SELECT r.session_id, w.ticket_key || ' · ' || r.role, w.worktree_dir FROM review r JOIN work w ON w.id = r.work_id WHERE r.session_id IS NOT NULL`).all() as Array<{ session_id: string; title: string; directory: string }>
-        const matches = rows.filter((row) => {
-          try { return canonical(row.directory) === directory && (!query || `${row.title} ${row.session_id}`.toLowerCase().includes(query)) }
-          catch { return false }
-        })
+        // Scope by checkout root, so sibling worktrees of the same repository stay visible.
+        const matched = await Promise.all(rows.map(async (row) => {
+          try { if (!await this.sameCheckout(row.directory, directory)) return undefined } catch { return undefined }
+          if (query && !`${row.title} ${row.session_id}`.toLowerCase().includes(query)) return undefined
+          return row
+        }))
+        const matches = matched.filter((row): row is { session_id: string; title: string; directory: string } => !!row)
         const conversations: unknown[] = []
         // Bound both returned context and concurrent service calls.
         for (let start = 0; start < matches.length && conversations.length < 50; start += 8) {

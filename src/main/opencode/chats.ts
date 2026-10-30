@@ -479,7 +479,8 @@ class ChatManager {
     const data = (e.data ?? {}) as Record<string, unknown>
     const sessionId = data.sessionID
     if (typeof sessionId !== 'string') return
-    if (sessionIndex.kindOf(sessionId) !== 'chat' && e.type !== 'session.renamed') return
+    const kind = sessionIndex.kindOf(sessionId)
+    if (kind !== 'chat' && !(kind === 'work' && e.type === 'session.moved') && e.type !== 'session.renamed') return
     switch (e.type) {
       case 'session.deleted': {
         // Another Revva window/client may delete this conversation.
@@ -498,6 +499,15 @@ class ChatManager {
         if (!row || row.title !== AUTO_TITLE) break
         getDb().prepare('UPDATE chat SET title = ? WHERE session_id = ?').run(title.slice(0, 100), sessionId)
         pushToWindows({ kind: 'chat.renamed', sessionId, title: title.slice(0, 100) })
+        break
+      }
+      case 'session.moved': {
+        // A move by any client must heal the index; otherwise utilities and the
+        // composer keep offering the old folder.
+        void openCodeService.api.session.get({ sessionID: sessionId }).then((session) => {
+          getDb().prepare('UPDATE chat SET directory = ? WHERE session_id = ?').run(session.location.directory, sessionId)
+          pushToWindows({ kind: 'chat.idle', sessionId })
+        }).catch(() => undefined)
         break
       }
       case 'session.execution.succeeded':

@@ -171,7 +171,11 @@ class WorkManager {
       openCodeService.api.session.get({ sessionID: sessionId }),
       openCodeService.api.session.active()
     ])
-    const folder = directory ? await realpath(directory) : session.location.directory
+    // Anchor on the live session location, not the renderer's cached copy: the
+    // session may have moved externally between listing and this call. A supplied
+    // directory must still agree with it, so nothing anchors to a stale folder.
+    const folder = await realpath(session.location.directory)
+    if (directory && await realpath(directory).catch(() => '') !== folder) throw new Error('The conversation moved to another folder while its utilities were opening. Retry.')
     let worktreeDir = folder
     let repoDir = folder
     let branch = ''
