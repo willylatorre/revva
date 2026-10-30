@@ -139,13 +139,14 @@ export const TranscriptContent = memo(function TranscriptContent({
     enabled: false
   })
   const rows = useMemo(() => mergeTranscript(history ?? EMPTY_HISTORY, live.data ?? EMPTY_STREAM), [history, live.data])
-  /** Previous group objects survive while every member message is identical. */
+  /** Previous group objects survive while every member message is identical.
+   *  Published only after commit: an aborted concurrent render must never become
+   *  the stability baseline for the next one. */
   const previousGroups = useRef<TranscriptGroup[]>([])
-  const groups = useMemo(() => {
-    const stable = stabilizeGroups(previousGroups.current, rows)
-    previousGroups.current = stable
-    return stable
-  }, [rows])
+  const groups = useMemo(() => stabilizeGroups(previousGroups.current, rows), [rows])
+  useLayoutEffect(() => {
+    previousGroups.current = groups
+  }, [groups])
 
   // Stick-to-bottom: jump instantly (smooth animations restart per token and
   // fight the user), and only while the user is already at the bottom.
@@ -156,10 +157,12 @@ export const TranscriptContent = memo(function TranscriptContent({
   const activityText = deriveActivity(running, groups)
   // Publish before paint so the footer strip never shows a blank frame, and
   // only a changed string wakes the strip — appended characters do not.
+  // The clear is a lifetime effect: an activity change publishes exactly the
+  // next meaningful string, never an intermediate null.
   useLayoutEffect(() => {
     activity.set(activityText)
-    return () => activity.set(null)
   }, [activity, activityText])
+  useLayoutEffect(() => () => activity.set(null), [activity])
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-4 px-6 pb-5 pt-16">
@@ -336,7 +339,20 @@ const toolStateLabel: Record<ChatToolCall['state'], string> = {
   error: 'failed'
 }
 
-/** One tool call as a compact collapsible step: name + input on the trigger, output inside. */
+/** One tool call as a compact collapsible step: name + input on the trigger, output inside.
+ *  mergeTranscript rebuilds tool objects on the active message whenever any text
+ *  grows, so compare every scalar field instead of relying on object identity. */
+function sameToolCall(a: ChatToolCall, b: ChatToolCall): boolean {
+  return a === b || (
+    a.id === b.id &&
+    a.name === b.name &&
+    a.state === b.state &&
+    a.detail === b.detail &&
+    a.output === b.output &&
+    a.inputLength === b.inputLength
+  )
+}
+
 const ToolCallRow = memo(function ToolCallRow({ tool }: { tool: ChatToolCall }): React.JSX.Element {
   const status = toolStateLabel[tool.state]
   return (
@@ -369,4 +385,4 @@ const ToolCallRow = memo(function ToolCallRow({ tool }: { tool: ChatToolCall }):
       )}
     </Collapsible>
   )
-})
+}, (prev, next) => sameToolCall(prev.tool, next.tool))
