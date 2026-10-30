@@ -21,7 +21,8 @@ import { sessionIndex } from '../opencode/session-index'
 import { streamBuffer } from '../opencode/stream-buffer'
 import { pushToWindows } from '../push'
 import { notifyInbound } from '../notify'
-import { fetchLastAssistantText, isConflict, promptImageFiles } from '../util'
+import { fetchLastAssistantText, isConflict, isMissingSession, promptImageFiles } from '../util'
+import { agentSessions } from '../opencode/agent-sessions'
 import { jiraBodyToText } from '../jira/rich-text'
 import { reviewManager } from '../review'
 import { shipManager } from '../ship'
@@ -121,12 +122,22 @@ class WorkManager {
   private prompting = new Set<string>()
   private draining = new Set<string>()
   private deferredCompletions = new Map<string, { work: WorkRow; revision: number }>()
+  /** Sessions Revva itself is deleting; their `session.deleted` events must not
+   *  produce a "removed outside Revva" heal on top of the removal in progress. */
+  private selfRemoved = new Set<string>()
+  private healing: Promise<void> | undefined
 
   wire(): void {
     if (this.wired) return
     this.wired = true
     // Never replay an ambiguously delivered prompt after a crash.
     getDb().prepare("UPDATE work_followup SET status = 'error', error = 'Revva restarted during delivery. Check the conversation before retrying; the message may already have arrived.' WHERE status = 'sending'").run()
+    // Sessions die outside Revva too (another client, the CLI, purged storage).
+    // Prove which rows point at dead sessions as soon as the service is reachable.
+    openCodeService.onStatus((status) => {
+      if (status.state === 'connected') void this.healDeadSessions()
+    })
+    eventBus.on('stream:reconnect', () => void this.healDeadSessions())
     eventBus.on('event', (e: RawEvent) => this.onEvent(e))
   }
 
@@ -538,6 +549,73 @@ class WorkManager {
     return this.toSummary(getDb().prepare('SELECT * FROM work WHERE id = ?').get(row.id) as WorkRow)
   }
 
+  /**
+   * A conversation deleted outside Revva leaves this row pointing at a dead
+   * session ID: every screen opened from it (transcript, agent, children,
+   * context usage, coordinator install) then fails with SessionNotFoundError,
+   * and the row cannot be deleted because its chat index row is already gone.
+   * Proof-driven: only a real `SessionNotFoundError` retires anything, so an
+   * unreachable service changes nothing.
+   */
+  private async healDeadSessions(): Promise<void> {
+    if (this.healing) return this.healing
+    if (!openCodeService.connected) return
+    const rows = getDb()
+      .prepare("SELECT session_id FROM work WHERE session_id IS NOT NULL AND state != 'ABANDONED' GROUP BY session_id")
+      .all() as Array<{ session_id: string }>
+    if (!rows.length) return
+    const healing = (async () => {
+      for (let i = 0; i < rows.length; i += 8) {
+        if (!openCodeService.connected) return
+        const batch = rows.slice(i, i + 8)
+        const results = await Promise.allSettled(
+          batch.map((row) => openCodeService.api.session.get({ sessionID: row.session_id }).then(() => undefined))
+        )
+        results.forEach((result, index) => {
+          // Live or unknown: never retire on a network problem or an unclassified failure.
+          const sessionId = batch[index]?.session_id
+          if (!sessionId || result.status === 'fulfilled' || !isMissingSession(result.reason)) return
+          this.retireDeadSession(sessionId, 'The OpenCode conversation was deleted outside Revva.')
+        })
+      }
+    })()
+      .catch((err) => console.warn('[work] dead-session heal failed:', describeError(err)))
+      .finally(() => {
+        if (this.healing === healing) this.healing = undefined
+      })
+    this.healing = healing
+    return healing
+  }
+
+  /**
+   * Drop one dead session pointer. A linked conversation the pipeline never
+   * owned dies with its row (there is nothing left to run); a run that owns its
+   * worktree keeps the row and its folder, and says what happened instead of
+   * pretending to build. A shipped record keeps its history and only loses the
+   * stale pointer.
+   */
+  private retireDeadSession(sessionId: string, why: string): void {
+    const work = this.workBySession(sessionId)
+    if (!work || work.state === 'ABANDONED') return
+    // Never pull the row out from under an in-flight reviewer or ship; retry later.
+    if (reviewManager.isBusyReviewing(work.id) || reviewManager.isStartingReview(work.id) || shipManager.isShipping(work.id)) {
+      setTimeout(() => void this.healDeadSessions(), 60_000)
+      return
+    }
+    if (work.owns_worktree === 0) {
+      getDb().prepare("UPDATE work SET state = 'ABANDONED', session_id = NULL, updated_at = ? WHERE id = ?").run(Date.now(), work.id)
+      this.buildRevisions.delete(sessionId)
+      this.emit(work.id, 'ABANDONED', `${why} The conversation is gone, so its pipeline row was retired; files and branch are untouched.`)
+    } else if (work.state === 'SHIPPED') {
+      getDb().prepare('UPDATE work SET session_id = NULL, updated_at = ? WHERE id = ?').run(Date.now(), work.id)
+      this.emit(work.id, 'SHIPPED', `${why} The shipped run keeps its record and branch; only the dead conversation link was removed.`)
+    } else {
+      this.setState(work.id, 'WAITING_HUMAN', `${why} Files, branch and worktree are intact — abandon this work to clean up, or start a new conversation for it.`)
+    }
+    agentSessions.forgetChildren(sessionId)
+    sessionIndex.forget(sessionId)
+  }
+
   /** Removing a conversation never deletes its folder or branch. */
   async forgetConversation(sessionId: string): Promise<void> {
     const work = this.workBySession(sessionId)
@@ -819,10 +897,17 @@ class WorkManager {
   }
 
   private onEvent(e: RawEvent): void {
-    // Detail is routed by the shared bus, without a SQLite read per token.
-    if (!['session.execution.started', 'session.execution.succeeded', 'session.execution.failed', 'session.execution.interrupted'].includes(e.type)) return
     const data = (e.data ?? {}) as Record<string, unknown>
     const sessionId = data.sessionID
+    // A work row whose session dies must stop pointing at the dead ID, whatever
+    // else routing follows. Chat rows heal themselves in chats.ts.
+    if (e.type === 'session.deleted' && typeof sessionId === 'string') {
+      const ours = this.selfRemoved.delete(sessionId)
+      if (!ours) this.retireDeadSession(sessionId, 'The OpenCode conversation was deleted outside Revva.')
+      return
+    }
+    // Detail is routed by the shared bus, without a SQLite read per token.
+    if (!['session.execution.started', 'session.execution.succeeded', 'session.execution.failed', 'session.execution.interrupted'].includes(e.type)) return
     if (typeof sessionId !== 'string') return
     // Fast miss on the index: chat/reviewer sessions never touch SQLite here.
     if (sessionIndex.kindOf(sessionId) !== 'work') return
@@ -1020,6 +1105,10 @@ class WorkManager {
     // Filesystem removal succeeded — only now let the rest of the record follow.
     if (work.session_id) {
       sessionIndex.forget(work.session_id)
+      // Mark it first: the `session.deleted` event (which may land late, after
+      // the row is already ABANDONED or while git still runs) must not look
+      // like an outside deletion. Cleared once the row itself is retired.
+      this.selfRemoved.add(work.session_id)
       await openCodeService.api.session.remove({ sessionID: work.session_id }).catch(() => undefined)
       getDb().prepare('DELETE FROM chat WHERE session_id = ?').run(work.session_id)
     }

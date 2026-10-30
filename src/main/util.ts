@@ -36,6 +36,15 @@ export function isConflict(err: unknown): boolean {
   return msg.includes('409') || /conflict|busy|already running/i.test(msg)
 }
 
+/** The typed "that session no longer exists" failure. Sessions die outside Revva
+ *  too (another client, a direct service change), and every code path that only
+ *  wanted the session gone must treat this as success, not as a scary note. */
+export function isMissingSession(err: unknown): boolean {
+  const e = err as { _tag?: unknown; message?: unknown } | undefined
+  if (e?._tag === 'SessionNotFoundError') return true
+  return /SessionNotFoundError|Session not found/i.test(String(e?.message ?? err ?? ''))
+}
+
 /** Prompt images → OpenCode `files` payloads (data URIs). */
 export function promptImageFiles(images: PromptImage[]): { uri: string; name?: string }[] {
   return images.map((img) => {

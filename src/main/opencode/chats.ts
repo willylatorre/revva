@@ -21,7 +21,7 @@ import { agentAttachments, fileAttachments, skillAttachments } from './prompt-re
 import { skillGuardRules } from './skill-guard'
 import { pushToWindows } from '../push'
 import { notifyInbound } from '../notify'
-import { isConflict, promptImageFiles } from '../util'
+import { isConflict, isMissingSession, promptImageFiles } from '../util'
 import { workManager } from '../pipeline/works'
 import { performanceMeter } from './performance'
 import { coordinator } from './coordinator'
@@ -466,9 +466,9 @@ class ChatManager {
       try {
         await openCodeService.api.session.remove({ sessionID: sessionId })
       } catch (err) {
-        // 'already gone' arrives here too and cannot be told apart reliably;
-        // an honest generic note beats silently keeping an orphan session.
-        note = `The OpenCode session could not be deleted: ${describeError(err)}`
+        // Deleted outside Revva (another client, a direct service change) is the
+        // outcome we wanted — say nothing. Any other failure earns an honest note.
+        if (!isMissingSession(err)) note = `The OpenCode session could not be deleted: ${describeError(err)}`
       }
     }
     getDb().prepare('DELETE FROM chat WHERE session_id = ?').run(sessionId)
