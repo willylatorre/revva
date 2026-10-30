@@ -21,55 +21,82 @@
  * on store and on read, so a cached entry is never handed to two renders and
  * can never be poisoned by downstream mutation.
  */
-import type {Processor} from 'unified'
+import type { Processor } from 'unified'
 
 /** Fixed config version of the parse pipeline, not an arbitrary plugin key. */
 const CONFIG_VERSION = 'react-markdown@10.1.0+remark-parse@11+remark-gfm@4+v1'
 
 const MAX_ENTRIES = 256
 /**
- * Estimated byte budget for retained parse results. The estimate counts the
- * UTF-16 source plus a structural walk of the AST's string fields with a flat
- * per-node/per-array overhead — an estimate, not a measured RSS figure.
+ * Estimated byte budget for retained parse results: each entry costs its
+ * UTF-16 source plus a conservative structural estimate of the AST (see
+ * estimateValueBytes). An estimate for bounding, not a measured RSS figure.
  */
 const MAX_TOTAL_BYTES = 8 * 1024 * 1024
-const SIZE_FIELD_BYTES = 16
-/** Deeper subtrees (pathological nesting) fall back to a JSON-size estimate. */
-const MAX_DEPTH = 100
+/** Conservative per-container/per-entry/per-scalar overheads (estimates). */
+const OBJECT_BYTES = 48
+const ARRAY_BYTES = 32
+const ENTRY_BYTES = 12
+const SCALAR_BYTES = 8
+
+/** Insertion-ordered Map: a hit delete+set-refreshes it, so eviction is true LRU. */
+const entries = new Map<string, CacheEntry>()
+let totalBytes = 0
 
 interface CacheEntry {
   tree: unknown
   bytes: number
 }
 
-/** Insertion-ordered Map: a hit delete+set-refreshes it, so eviction is true LRU. */
-const entries = new Map<string, CacheEntry>()
-let totalBytes = 0
-
-function byteLength(value: string): number {
-  return value.length * 2 // UTF-16 estimate
+function utf16Bytes(value: string): number {
+  return value.length * 2
 }
 
-function estimateNodeBytes(node: unknown, depth: number): number {
-  if (typeof node !== 'object' || node === null) return byteLength(String(node))
-  const record = node as Record<string, unknown>
-  let bytes = byteLength(String(record.type)) + SIZE_FIELD_BYTES
-  for (const field of ['value', 'lang', 'meta', 'url', 'title', 'alt']) {
-    const value = record[field]
-    if (typeof value === 'string') bytes += byteLength(value)
-  }
-  const children = record.children
-  if (Array.isArray(children)) {
-    bytes += SIZE_FIELD_BYTES
-    for (const child of children) {
-      bytes += depth < MAX_DEPTH ? estimateNodeBytes(child, depth + 1) : byteLength(JSON.stringify(child))
+/**
+ * Conservative structural estimate of the actual AST value graph: iteratively
+ * walks every object's own fields and every array element, counting UTF-16
+ * strings (values, urls, footnote/link labels, identifiers), key names, and
+ * per-object/array/entry/scalar overhead — so position objects, definitions,
+ * and footnote label nodes all contribute. Shared AST pointers are counted
+ * once and cycles terminate (mdast is plain-tree today; the guard is cheap
+ * insurance). Bounded work: the walk stops as soon as the running total
+ * passes `limit`, so oversize documents cost at most `limit` worth of walking
+ * — never a second full pass. An estimate, not RSS.
+ */
+function estimateValueBytes(value: unknown, limit: number): number {
+  const stack: unknown[] = [value]
+  const seen = new WeakSet<object>()
+  let bytes = 0
+  while (stack.length > 0) {
+    const item = stack.pop()
+    if (typeof item === 'string') {
+      bytes += utf16Bytes(item)
+    } else if (typeof item === 'number' || typeof item === 'boolean') {
+      bytes += SCALAR_BYTES
+    } else if (typeof item === 'object' && item !== null) {
+      if (seen.has(item)) continue
+      seen.add(item)
+      if (Array.isArray(item)) {
+        bytes += ARRAY_BYTES + item.length * ENTRY_BYTES
+        for (const child of item) stack.push(child)
+      } else {
+        bytes += OBJECT_BYTES
+        for (const key of Object.keys(item)) {
+          bytes += utf16Bytes(key) + ENTRY_BYTES
+          const child = (item as Record<string, unknown>)[key]
+          if (typeof child !== 'undefined' && child !== null) stack.push(child)
+        }
+      }
     }
+    if (bytes > limit) return limit + 1
   }
   return bytes
 }
 
 function estimateEntryBytes(source: string, tree: unknown): number {
-  return byteLength(CONFIG_VERSION) + byteLength(source) + estimateNodeBytes(tree, 0)
+  const headroom = MAX_TOTAL_BYTES - utf16Bytes(CONFIG_VERSION) - utf16Bytes(source)
+  if (headroom <= 0) return MAX_TOTAL_BYTES + 1 // oversize source alone: skip the walk
+  return MAX_TOTAL_BYTES - headroom + estimateValueBytes(tree, headroom)
 }
 
 function evictOverflow(): void {
@@ -114,12 +141,13 @@ export function parseCachedMarkdown<Tree>(source: string, parseFresh: () => Tree
         totalBytes -= existing.bytes
         entries.delete(key)
       }
-      entries.set(key, {tree: structuredClone(tree), bytes})
+      entries.set(key, { tree: structuredClone(tree), bytes })
       totalBytes += bytes
       evictOverflow()
     }
   } catch {
-    // A failed store only costs a future cache hit.
+    // A failed store (e.g. a cycle structuredClone rejects) only costs a
+    // future cache hit.
   }
   return tree
 }
