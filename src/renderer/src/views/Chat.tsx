@@ -1,26 +1,24 @@
-import { useEffect, useLayoutEffect, useMemo, memo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowUp, Bot, Check, ChevronDown, ChevronRight, Copy, Cpu, ImageIcon, Square, Tag, X } from 'lucide-react'
+import { ArrowUp, Bot, Check, ChevronDown, Copy, Cpu, ImageIcon, Square, Tag, X } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Textarea } from '@/components/ui/textarea'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Skeleton } from '@/components/ui/skeleton'
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from '@/components/ui/popover'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
-import { EMPTY_STREAM, beginTranscriptSnapshot, displayTranscript, finishTranscriptSnapshot, mergeHistory, mergeTranscript, streamKey, transcriptReady, useTranscriptVisibility, type LiveTranscript } from '@/lib/transcript-stream'
+import { beginTranscriptSnapshot, displayTranscript, finishTranscriptSnapshot, mergeHistory, transcriptReady, useTranscriptVisibility } from '@/lib/transcript-stream'
 import { transcriptRequest } from '@/lib/transcript-requests'
 import { SessionStats } from '@/components/session-stats'
-import { MD_COMPONENTS } from '@/components/message-markdown'
+import { TranscriptActivityStrip, TranscriptContent, USER_MD_COMPONENTS, createTranscriptActivityStore } from '@/components/transcript-content'
 import { Choice } from './NewChatDialog'
-import type { ChatMessage, ChatToolCall, FileHit, ModelRef, PromptImage, PromptRefs, QueuedMessage, SkillInfo, WorkSummary, TranscriptPage } from '@shared/types'
+import type { ChatMessage, FileHit, ModelRef, PromptImage, PromptRefs, QueuedMessage, SkillInfo, WorkSummary, TranscriptPage } from '@shared/types'
 import { FormCard, PermissionCard, useInbox } from './InboxView'
 import { PrConversationActions } from './PrConversationActions'
 import { ConversationEnvironment, ConversationActions, ConversationDetails } from './ConversationEnvironment'
@@ -30,31 +28,6 @@ import { WorkFollowUpQueue } from './WorkFollowUpQueue'
 const IMAGE_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp'
 const MAX_IMAGES = 8
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
-
-// Preserve ordinary line breaks in user-written prompts while rendering Markdown.
-const USER_MD_COMPONENTS: typeof MD_COMPONENTS = {
-  ...MD_COMPONENTS,
-  p: ({ node: _node, ...props }) => <p className="my-1.5 whitespace-pre-wrap first:mt-0 last:mb-0" {...props} />,
-  a: ({ node: _node, ...props }) => (
-    <a
-      {...props}
-      className="underline underline-offset-2"
-      onClick={(e) => {
-        e.preventDefault()
-        if (props.href) void window.revva.shell.openExternal(props.href)
-      }}
-    />
-  )
-}
-const USER_BUBBLE_MD_COMPONENTS: typeof MD_COMPONENTS = {
-  ...USER_MD_COMPONENTS,
-  pre: ({ node: _node, ...props }) => (
-    <pre {...props} className="overflow-x-auto rounded-md border border-primary-foreground/20 bg-primary-foreground/10 px-3 py-2 text-xs leading-relaxed [&_code]:bg-transparent [&_code]:p-0" />
-  ),
-  code: ({ node: _node, ...props }) => (
-    <code {...props} className="rounded bg-primary-foreground/15 px-1 py-0.5 font-mono text-[11px]" />
-  )
-}
 
 /* ---------- composer tokens: /skill and @file ---------- */
 
@@ -241,13 +214,9 @@ export function TranscriptView({
     void qc.cancelQueries({ queryKey: [...drive.queryKey, sessionId] })
     void qc.cancelQueries({ queryKey: ['session-context-usage', sessionId] })
   }, [visible, qc, drive, sessionId])
-  const live = useQuery<LiveTranscript>({
-    queryKey: streamKey(sessionId),
-    queryFn: () => EMPTY_STREAM,
-    initialData: EMPTY_STREAM,
-    structuralSharing: false,
-    enabled: false
-  })
+  /** The transcript body publishes its derived activity here; this view (and the
+   *  composer) never observe the full session stream itself. */
+  const [activityStore] = useState(createTranscriptActivityStore)
   const wasRunning = useRef(running)
   useEffect(() => {
     // Polling/focus recovery can discover a completion whose push was missed.
@@ -379,6 +348,7 @@ export function TranscriptView({
 
   // Stick-to-bottom: jump instantly (smooth animations restart per token and
   // fight the user), and only while the user is already at the bottom.
+  // The per-content-change follow lives in TranscriptContent.
   const scrollWrapRef = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
   useEffect(() => {
@@ -400,9 +370,6 @@ export function TranscriptView({
     bottomRef.current?.scrollIntoView({ behavior: 'instant', block: 'end' })
     positionedSessionRef.current = sessionId
   }, [sessionId, messages.data])
-  useEffect(() => {
-    if (stick.current) bottomRef.current?.scrollIntoView({ block: 'end' })
-  }, [messages.data, live.data, running])
 
   const addImages = async (files: File[]): Promise<void> => {
     const images = await filesToImages(files)
@@ -524,22 +491,6 @@ export function TranscriptView({
     }
   })
 
-  const rows = useMemo(() => mergeTranscript(messages.data ?? [], live.data ?? EMPTY_STREAM), [messages.data, live.data])
-  /** Consecutive assistant messages are steps of one agent turn — one card each. */
-  const groups = useMemo(() => groupRows(rows), [rows])
-  const latestGroup = groups.at(-1)
-  const currentTurn = running && latestGroup?.kind === 'assistant' ? latestGroup : null
-  const latestTool = currentTurn?.kind === 'assistant'
-    ? currentTurn.msgs.flatMap((message) => message.tools ?? []).at(-1)
-    : undefined
-  const activityText = currentTurn?.kind === 'assistant'
-    ? [
-        `Step ${currentTurn.msgs.length}`,
-        latestTool
-          ? `${latestTool.state === 'error' ? 'Failed' : latestTool.state === 'completed' ? 'Last' : 'Running'}: ${latestTool.name}${latestTool.detail ? ` · ${latestTool.detail.split('\n')[0]}` : ''}`
-          : currentTurn.msgs.at(-1)?.thinking ? 'Reasoning' : 'Generating response'
-      ].filter(Boolean).join(' · ')
-    : 'Preparing response…'
   const queued = queue.data ?? []
   const canSend = (input.trim().length > 0 || pendingImages.length > 0) && !send.isPending
 
@@ -561,36 +512,22 @@ export function TranscriptView({
           <SessionStats sessionId={sessionId} running={running} />
         </div>
         <ScrollArea className="min-h-0 flex-1">
-          <div className="mx-auto flex max-w-3xl flex-col gap-4 px-6 pb-5 pt-16">
-            {messages.isLoading && <Skeleton className="h-16 w-full" />}
-            {!messages.isLoading && !messages.isError && rows.length === 0 && !running && (
-              <p className="mt-10 text-center text-sm text-muted-foreground">{emptyHint}</p>
-            )}
-            {groups.map((g, i) =>
-              g.kind === 'user' ? (
-                <MessageRow key={g.msg.id} message={g.msg} />
-              ) : (
-                <AssistantTurn
-                  key={g.msgs[0]?.id ?? i}
-                  messages={g.msgs}
-                  streaming={running && i === groups.length - 1}
-                />
-              )
-            )}
-            <div ref={bottomRef} />
-          </div>
+          <TranscriptContent
+            sessionId={sessionId}
+            history={messages.data}
+            loading={messages.isLoading}
+            error={messages.isError}
+            running={running}
+            emptyHint={emptyHint}
+            stick={stick}
+            bottomRef={bottomRef}
+            activity={activityStore}
+          />
         </ScrollArea>
       </div>
 
       {work && <WorkAgentActivity key={work.id} work={work} />}
-      {running && !reviewing && (
-        <div className="shrink-0 px-3 py-1.5 sm:px-6" role="status" aria-live="polite">
-          <div className="mx-auto flex max-w-3xl items-center gap-2 overflow-hidden">
-            <Badge variant="secondary" className="shrink-0 text-[10px]">Thinking</Badge>
-            <span className="truncate text-[11px] text-muted-foreground" title={activityText}>{activityText}</span>
-          </div>
-        </div>
-      )}
+      {running && !reviewing && <TranscriptActivityStrip store={activityStore} />}
 
       {!readOnly && pending.length > 0 && (
         <section aria-label="Waiting on you" className="max-h-[40vh] shrink-0 overflow-y-auto border-t bg-muted/30 px-3 py-3 sm:px-6">
@@ -846,209 +783,7 @@ function QueuedRow({ item, position, onCancel, onSteer, steering }: {
   )
 }
 
-/* ---------- turn grouping ---------- */
-
-type TranscriptGroup = { kind: 'user'; msg: ChatMessage } | { kind: 'assistant'; msgs: ChatMessage[] }
-
-/** Pace Markdown parsing during streaming without delaying the completed message. */
-const RenderedAssistantMarkdown = memo(function RenderedAssistantMarkdown({ text }: { text: string }): React.JSX.Element {
-  return <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>{text}</ReactMarkdown>
-})
-
-const AssistantMarkdown = memo(function AssistantMarkdown({ text, streaming }: { text: string; streaming?: boolean }): React.JSX.Element {
-  const latest = useRef(text)
-  const [rendered, setRendered] = useState(text)
-  useEffect(() => {
-    latest.current = text
-  }, [text])
-  useEffect(() => {
-    if (!streaming) return
-    const timer = window.setInterval(() => setRendered(latest.current), 150)
-    return () => window.clearInterval(timer)
-  }, [streaming])
-  return <RenderedAssistantMarkdown text={streaming ? rendered : text} />
-})
-
-/** Collapse consecutive assistant messages (one per agent-loop step) into a single
- *  turn group, so a chain of tool calls reads as one thought process, not N bubbles. */
-function groupRows(rows: ChatMessage[]): TranscriptGroup[] {
-  const out: TranscriptGroup[] = []
-  for (const m of rows) {
-    if (m.role === 'user') out.push({ kind: 'user', msg: m })
-    else {
-      const last = out[out.length - 1]
-      if (last?.kind === 'assistant') last.msgs.push(m)
-      else out.push({ kind: 'assistant', msgs: [m] })
-    }
-  }
-  return out
-}
-
-/** One agent turn as a single card: thoughts and tool steps collapsed inside,
- *  the answer(s) visible. The step list stays collapsed unless the user opens it. */
-function AssistantTurn({
-  messages,
-  streaming
-}: {
-  messages: ChatMessage[]
-  streaming: boolean
-}): React.JSX.Element | null {
-  const tools = messages.flatMap((m) => m.tools ?? [])
-  const thinking = messages.map((m) => m.thinking).filter(Boolean).join('\n\n')
-  const texts = messages.map((m) => m.text).filter((t) => t.trim() !== '')
-  const shown = texts
-  const busy = streaming || tools.some((t) => t.state === 'running' || t.state === 'streaming')
-
-  const [stepsOpen, setStepsOpen] = useState(false)
-
-  // A turn with no real content yet (no text, no tools, no reasoning) gets no
-  // card — the footer badge already says Thinking while the step spins up.
-  if (shown.length === 0 && tools.length === 0 && !thinking) return null
-  return (
-    <div className="flex justify-start">
-      <div className="flex max-w-[85%] flex-col gap-1.5 rounded-lg bg-muted px-3.5 py-2.5 text-[13px] leading-relaxed">
-        {thinking && <ThinkingBlock text={thinking} />}
-        {tools.length > 0 && (
-          <Collapsible open={stepsOpen} onOpenChange={setStepsOpen} className="group/collapsible">
-            <CollapsibleTrigger className="flex w-full items-center gap-1.5 rounded-md px-1 py-0.5 text-xs text-muted-foreground hover:text-foreground">
-              <ChevronRight className="size-3 shrink-0 transition-transform group-data-[open]/collapsible:rotate-90" />
-              <span>
-                Worked through {tools.length} step{tools.length === 1 ? '' : 's'}
-              </span>
-              {busy && <span className="animate-pulse italic">running…</span>}
-            </CollapsibleTrigger>
-            <CollapsibleContent>
-              <div className="mt-1 flex flex-col">
-                {tools.map((t) => (
-                  <ToolCallRow key={t.id} tool={t} />
-                ))}
-              </div>
-            </CollapsibleContent>
-          </Collapsible>
-        )}
-        {shown.map((text, i) => (
-          <div key={i} className="min-w-0">
-            <AssistantMarkdown text={text} streaming={streaming && i === shown.length - 1} />
-            {streaming && i === shown.length - 1 && <span className="animate-pulse">▍</span>}
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-export const MessageRow = memo(function MessageRow({ message, streaming }: { message: ChatMessage; streaming?: boolean }): React.JSX.Element {
-  const isUser = message.role === 'user'
-  const empty = message.text === ''
-  const images = message.images ?? []
-  const tools = message.tools ?? []
-  return (
-    <div className={cn('flex', isUser ? 'justify-end' : 'justify-start')}>
-      <div
-        className={cn(
-          'flex min-w-0 max-w-[85%] flex-col gap-2 rounded-lg px-3.5 py-2.5 text-[13px] leading-relaxed',
-          isUser ? 'bg-primary text-primary-foreground' : 'bg-muted'
-        )}
-      >
-        {images.length > 0 && (
-          <div className={cn('flex flex-wrap gap-1.5', tools.length === 0 && images.length === 1 && 'max-w-80')}>
-            {images.map((img, i) => (
-              <img
-                key={i}
-                 src={img.data}
-                 loading="lazy"
-                 decoding="async"
-                alt={img.name ?? 'attachment'}
-                className={cn(
-                  'rounded-md border border-black/10 object-cover dark:border-white/10',
-                  images.length === 1 ? 'max-h-64 max-w-full' : 'size-24'
-                )}
-              />
-            ))}
-          </div>
-        )}
-        {isUser ? (
-          <div className="min-w-0">
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={USER_BUBBLE_MD_COMPONENTS}>{message.text}</ReactMarkdown>
-          </div>
-        ) : (
-          <div className="min-w-0">
-            {message.thinking && <ThinkingBlock text={message.thinking} />}
-            {tools.map((t) => (
-              <ToolCallRow key={t.id} tool={t} />
-            ))}
-            {!empty && (
-              <>
-                {tools.length > 0 && <div className="mt-1" />}
-                <AssistantMarkdown text={message.text} streaming={streaming} />
-              </>
-            )}
-            {streaming && <span className="animate-pulse">▍</span>}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-})
-
-/** Faded collapsible for the model's reasoning text. */
-function ThinkingBlock({ text }: { text: string }): React.JSX.Element {
-  return (
-    <Collapsible className="group/collapsible mb-1.5 text-xs">
-      <CollapsibleTrigger className="flex items-center gap-1 italic text-muted-foreground hover:text-foreground">
-        <ChevronRight className="size-3 transition-transform group-data-[open]/collapsible:rotate-90" />
-        Thought for a moment
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <p className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap border-l border-black/15 pl-2.5 italic text-muted-foreground dark:border-white/15">
-          {text}
-        </p>
-      </CollapsibleContent>
-    </Collapsible>
-  )
-}
-
-const toolStateLabel: Record<ChatToolCall['state'], string> = {
-  streaming: 'preparing…',
-  running: 'running…',
-  completed: '',
-  error: 'failed'
-}
-
-/** One tool call as a compact collapsible step: name + input on the trigger, output inside. */
-function ToolCallRow({ tool }: { tool: ChatToolCall }): React.JSX.Element {
-  const status = toolStateLabel[tool.state]
-  return (
-    <Collapsible className="group/collapsible not-prose my-1 rounded-md border border-black/10 bg-black/[0.03] text-xs dark:border-white/10 dark:bg-white/[0.04]">
-      <CollapsibleTrigger className="flex w-full items-center gap-1.5 px-2 py-1.5 text-left">
-        <ChevronRight className="size-3 shrink-0 text-muted-foreground transition-transform group-data-[open]/collapsible:rotate-90" />
-        <span className="shrink-0 font-mono font-medium">{tool.name}</span>
-        {tool.detail && (
-          <span className="truncate font-mono text-muted-foreground" title={tool.detail}>
-            {tool.detail.split('\n')[0]}
-          </span>
-        )}
-        {status && (
-          <span className={cn('ml-auto shrink-0 italic', tool.state === 'error' ? 'text-destructive' : 'text-muted-foreground', tool.state !== 'completed' && tool.state !== 'error' && 'animate-pulse')}>
-            {status}
-          </span>
-        )}
-      </CollapsibleTrigger>
-      {tool.output && (
-        <CollapsibleContent>
-          <pre
-            className={cn(
-              'max-h-56 overflow-auto border-t border-black/10 px-2 py-1.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap dark:border-white/10',
-              tool.state === 'error' && 'text-destructive'
-            )}
-          >
-            {tool.output}
-          </pre>
-        </CollapsibleContent>
-      )}
-    </Collapsible>
-  )
-}
+export { MessageRow } from '@/components/transcript-content'
 
 export function RunningBadge({ running }: { running: boolean }): React.JSX.Element | null {
   if (!running) return null
