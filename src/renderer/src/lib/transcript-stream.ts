@@ -76,6 +76,7 @@ export function mergeTranscript(history: ChatMessage[], live: LiveTranscript): C
 }
 
 type Batch = Extract<PushEvent, { kind: 'transcript.batch' }>
+type ToolHint = Extract<PushEvent, { kind: 'chat.tool' }>
 interface Displayed {
   token: string
   refs: number
@@ -88,6 +89,53 @@ interface Displayed {
   awaiting: Set<string>
 }
 const displayed = new Map<string, Displayed>()
+
+/**
+ * Tool applications this window actually accepted from a live batch, awaiting
+ * the matching `chat.tool` hint: JSON tuple of `[messageId, toolId]` (native
+ * IDs are opaque — never concatenated with a separator that could collide) →
+ * applied state. Populated only outside loading/prefix replay (a snapshot
+ * merge is not proof the live path covered the tool), cleared on every reset,
+ * gap/release, and snapshot begin, and consumed by its hint even when the
+ * hint then falls back — a covered hint never leaves coverage behind. A hint
+ * without usable IDs clears the session's receipts conservatively. Every
+ * fallback keeps the unconditional history refresh.
+ */
+const toolReceipts = new Map<string, Map<string, ChatToolCall['state']>>()
+const LIFECYCLE_STATE: Record<string, ChatToolCall['state']> = {
+  'session.tool.called': 'running',
+  'session.tool.success': 'completed',
+  'session.tool.failed': 'error'
+}
+function clearToolReceipts(sessionId?: string): void {
+  if (sessionId) toolReceipts.delete(sessionId)
+  else toolReceipts.clear()
+}
+function takeToolReceipt(qc: QueryClient, event: ToolHint): boolean {
+  const state = LIFECYCLE_STATE[event.state]
+  if (!state || !event.messageId || !event.toolId) {
+    // Main could not prove coverage for this event: treat every pending
+    // receipt for the session as stale and keep the refresh.
+    clearToolReceipts(event.sessionId)
+    return false
+  }
+  const key = JSON.stringify([event.messageId, event.toolId])
+  const receipts = toolReceipts.get(event.sessionId)
+  const receipt = receipts?.get(key)
+  if (receipt !== undefined) receipts!.delete(key) // consumed regardless of the outcome below
+  if (receipt !== state) return false
+  // The receipt only covers this hint while the displayed attachment is
+  // still whole — a snapshot can begin between the covering batch and the
+  // hint, or finish with this message awaiting its prefix.
+  const surface = displayed.get(event.sessionId)
+  if (!surface?.attachment || surface.loading || surface.forceReset || surface.awaiting.has(event.messageId)) return false
+  // A displayed native history state that contradicts the applied live
+  // terminal state stays authoritative: keep the refresh instead of suppressing.
+  const history = qc.getQueryData<ChatMessage[]>(['chat-messages', event.sessionId])
+  const saved = history?.find((row) => row.id === event.messageId)?.tools?.find((tool) => tool.id === event.toolId)
+  if ((saved?.state === 'completed' || saved?.state === 'error') && saved.state !== state) return false
+  return true
+}
 
 /** Unique ownership token shared by simultaneous surfaces of the same session. */
 export function displayTranscript(qc: QueryClient, sessionId: string): { ready: Promise<void>; release: () => void } {
@@ -122,6 +170,7 @@ export function displayTranscript(qc: QueryClient, sessionId: string): { ready: 
     released = true
     if (--current.refs > 0) return
     if (displayed.get(sessionId) === current) displayed.delete(sessionId)
+    clearToolReceipts(sessionId)
     qc.setQueryData(streamKey(sessionId), EMPTY_STREAM)
     void window.revva.session.unsubscribe(current.token).catch(() => undefined)
   } }
@@ -136,11 +185,15 @@ export function beginTranscriptSnapshot(sessionId: string): boolean {
   const state = displayed.get(sessionId)
   if (!state) return true
   state.loading = true
+  // A snapshot refetch replaces live coverage: batches arriving during
+  // loading queue as pending replay (never receipted), so anything recorded
+  // before this point must not suppress hints around the snapshot.
+  clearToolReceipts(sessionId)
   return state.forceReset
 }
 
-function applyBatch(qc: QueryClient, event: Batch): boolean {
-  let gap = false
+function applyBatch(qc: QueryClient, event: Batch, live = false): boolean {
+  const gap = { value: false }
   qc.setQueryData<LiveTranscript>(streamKey(event.sessionId), (old = EMPTY_STREAM) => {
     const next = { ...old }
     for (const update of event.updates) {
@@ -150,7 +203,7 @@ function applyBatch(qc: QueryClient, event: Batch): boolean {
       if (update.field === 'text' || update.field === 'thinking') {
         const field = update.field
         const length = message.streamLengths?.[field] ?? (message[field]?.length ?? 0)
-        if (update.offset === undefined || update.offset > length) { gap = true; continue }
+        if (update.offset === undefined || update.offset > length) { gap.value = true; continue }
         const skip = Math.max(0, length - update.offset)
         const append = (update.text ?? '').slice(skip)
         if (!append) continue
@@ -161,12 +214,26 @@ function applyBatch(qc: QueryClient, event: Batch): boolean {
         const previous = tools.get(update.partId)
         if (update.tool) {
           const tool = update.tool
-          if (olderTool(previous, tool)) continue
+          if (olderTool(previous, tool)) continue // regressive update: not an application, no receipt
           tools.set(tool.id, { ...previous, ...tool, name: tool.name === 'tool' ? previous?.name ?? tool.name : tool.name, detail: tool.detail ?? previous?.detail, output: tool.output ?? previous?.output })
+          // Only live-path applications on a message with a complete prefix
+          // prove the covering batch arrived; snapshot replays never do.
+          // input.started ('streaming') has no hint, so only lifecycle states
+          // that a hint could map to are ever recorded.
+          const recordable = tool.state === 'running' || tool.state === 'completed' || tool.state === 'error'
+          if (live && recordable && !displayed.get(event.sessionId)?.awaiting.has(update.messageId)) {
+            let receipts = toolReceipts.get(event.sessionId)
+            if (!receipts) {
+              receipts = new Map()
+              toolReceipts.set(event.sessionId, receipts)
+            }
+            receipts.set(JSON.stringify([update.messageId, update.partId]), tool.state)
+            while (receipts.size > 256) receipts.delete(receipts.keys().next().value!)
+          }
         } else if (previous?.state === 'streaming') {
           const length = previous.inputLength ?? 0
           if (update.offset === undefined) continue
-          if (update.offset > length) { gap = true; continue }
+          if (update.offset > length) { gap.value = true; continue }
           const append = (update.text ?? '').slice(Math.max(0, length - update.offset))
           tools.set(previous.id, { ...previous, detail: ((previous.detail ?? '') + append).slice(0, 2000), inputLength: length + append.length })
         } else if (!update.tool) {
@@ -180,7 +247,7 @@ function applyBatch(qc: QueryClient, event: Batch): boolean {
     for (let i = 0; i < ids.length - 200; i++) delete next[ids[i]!]
     return next
   })
-  return !gap
+  return !gap.value
 }
 
 export function finishTranscriptSnapshot(qc: QueryClient, sessionId: string, history: ChatMessage[], missingPrefixes: string[] = []): boolean {
@@ -240,9 +307,11 @@ export function subscribeTranscripts(qc: QueryClient): () => void {
     for (const id of new Set(ids)) {
       const state = displayed.get(id)
       if (state) { state.forceReset = true; state.loading = true; state.pending = []; state.bytes = 0 }
+      clearToolReceipts(id)
       qc.setQueryData<number>(['transcript-reset', id], (old = 0) => old + 1)
       qc.setQueryData(streamKey(id), EMPTY_STREAM)
     }
+    if (!sessionId) clearToolReceipts()
     refresh(sessionId)
   }
   const unsubscribe = window.revva.events.on((event) => {
@@ -274,7 +343,7 @@ export function subscribeTranscripts(qc: QueryClient): () => void {
         state.pending.push(event)
         state.bytes += event.updates.reduce((total, update) => total + (update.text?.length ?? 0) * 2 + 256, 0)
         if (state.bytes > 1024 * 1024 || state.pending.length > 512) reset(event.sessionId)
-      } else if (!applyBatch(qc, event)) reset(event.sessionId)
+      } else if (!applyBatch(qc, event, true)) reset(event.sessionId)
       if (event.diagnostic) {
         requestAnimationFrame(() => { void window.revva.session.performanceFrame(performance.now() - received).catch(() => undefined) })
       }
@@ -317,7 +386,10 @@ export function subscribeTranscripts(qc: QueryClient): () => void {
       if (event.reset === false) refresh(event.sessionId)
       else reset(event.sessionId)
     } else if (event.kind === 'chat.tool') {
-      refresh(event.sessionId)
+      // Suppress the redundant history refresh only when this exact message/
+      // tool application was accepted live with the identical lifecycle state;
+      // everything unknown keeps the unconditional refresh.
+      if (!takeToolReceipt(qc, event)) refresh(event.sessionId)
     } else if (event.kind === 'review.updated') {
       const previousRows = qc.getQueryData<ReviewRow[]>(['reviews', event.workId]) ?? []
       const previous = new Map(previousRows.map((row) => [row.id, row.status]))

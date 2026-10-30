@@ -63,7 +63,7 @@ class EventBus extends EventEmitter {
           if (process.env.REVVA_DEBUG_EVENTS) console.log('[bus]', (event as RawEvent).type)
           this.emit('event', event)
           const raw = event as RawEvent
-          streamBuffer.onEvent(raw)
+          const toolCoverage = streamBuffer.onEvent(raw)
           if (raw.type === 'session.step.streamed' && typeof raw.data?.sessionID === 'string') {
             // A draft may become readable before its tools finish. This is a
             // targeted recovery hint, not a reason to clear the observed prefix.
@@ -77,7 +77,10 @@ class EventBus extends EventEmitter {
             pushToWindows({ kind: 'session.transcript', sessionId: raw.data.sessionID })
           }
           if (TOOL_STATE_EVENTS.has(raw.type) && typeof raw.data?.sessionID === 'string') {
-            pushToWindows({ kind: 'chat.tool', sessionId: raw.data.sessionID, tool: String(raw.data.name ?? 'tool'), state: raw.type })
+            // IDs come from this same event's synchronous flush; the renderer
+            // suppresses its history refresh only when it recorded a receipt
+            // for exactly this message/tool application. Absent means refresh.
+            pushToWindows({ kind: 'chat.tool', sessionId: raw.data.sessionID, tool: String(raw.data.name ?? 'tool'), state: raw.type, messageId: toolCoverage?.messageId, toolId: toolCoverage?.toolId })
           }
           if ((event as RawEvent).type === 'mcp.status.changed') {
             pushToWindows({ kind: 'mcp.changed' })

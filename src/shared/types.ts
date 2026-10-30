@@ -878,7 +878,10 @@ export const pushEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('chat.delta'), sessionId: z.string(), messageId: z.string(), text: z.string() }),
   z.object({ kind: z.literal('chat.message'), sessionId: z.string(), message: chatMessageSchema }),
   z.object({ kind: z.literal('chat.idle'), sessionId: z.string() }),
-  z.object({ kind: z.literal('chat.tool'), sessionId: z.string(), tool: z.string(), state: z.string() }),
+  /** Optional native IDs only when main proved the covering batch was flushed
+   *  first; the renderer suppresses its history refresh solely on an applied
+   *  receipt matching exactly these IDs and this lifecycle state. */
+  z.object({ kind: z.literal('chat.tool'), sessionId: z.string(), tool: z.string(), state: z.string(), messageId: z.string().optional(), toolId: z.string().optional() }),
   /** OpenCode auto-titled the session from its first message. */
   z.object({ kind: z.literal('chat.renamed'), sessionId: z.string(), title: z.string() }),
   /** Queue contents or the session's selected model changed — renderer refetches. */
