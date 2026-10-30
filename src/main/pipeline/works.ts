@@ -441,8 +441,42 @@ class WorkManager {
     if (reviewManager.isBusyReviewing(row.id) || shipManager.isShipping(row.id) || this.isPrompting(row.id)) return undefined
     if (row.branch) return this.followSessionCheckout(row)
     const found = await probeCheckout(row.worktree_dir)
-    if (!found || !found.branch) return undefined
-    return this.reanchor(row, found, 'its folder became a checkout after it was anchored')
+    if (found?.branch) return this.reanchor(row, found, 'its folder became a checkout after it was anchored')
+    if (found) return this.attachDetachedPrBranch(row)
+    return undefined
+  }
+
+  /**
+   * Heal the PR-review shape of the blank-branch drift: “Chat with this PR” anchored
+   * on the review worktree, which Revva itself adds **detached** at the fetched PR head
+   * (`github.ts` — `worktree add --detach`). A detached folder never gains a branch, so
+   * the row stayed blank and review refused forever (“Choose the conversation’s Git
+   * worktree and check out a branch”), with no picker able to say otherwise.
+   *
+   * The fix is attaching, not inventing: if the PR's own fetched branch (`revva/pr-N`,
+   * named from the row's PR URL) still points at exactly HEAD and the checkout has no
+   * tracked changes, `git checkout` it — at the same commit git rewrites nothing but
+   * HEAD's symbolic ref, and it refuses on its own if anything about that stopped being
+   * true. Any other detached state (branch elsewhere, untracked collision, no PR link)
+   * changes nothing and leaves the guidance for a human.
+   */
+  private async attachDetachedPrBranch(row: WorkRow): Promise<WorkSummary | undefined> {
+    const prNumber = row.pr_url?.match(/\/pull\/(\d+)/)?.[1]
+    if (!prNumber) return undefined
+    const branch = `revva/pr-${prNumber}`
+    const atHead = await exec('git', ['-C', row.worktree_dir, 'for-each-ref', '--points-at', 'HEAD', '--format=%(refname:short)', `refs/heads/${branch}`])
+      .then((r) => r.stdout.trim()).catch(() => '')
+    if (atHead !== branch) return undefined
+    const dirty = await exec('git', ['-C', row.worktree_dir, 'status', '--porcelain', '--untracked-files=no'])
+      .then((r) => r.stdout.trim()).catch(() => 'unreadable')
+    if (dirty) return undefined
+    // Same commit, clean tree: this is a symbolic attach. `branch` only occupies a name
+    // this repository's own review flow created; a checkout held by another worktree is
+    // refused by git itself, which is reported as a refusal, not a repair.
+    await exec('git', ['-C', row.worktree_dir, 'checkout', branch]).catch(() => undefined)
+    const found = await probeCheckout(row.worktree_dir)
+    if (found?.branch !== branch) return undefined
+    return this.reanchor(row, found, `attached the PR head branch its review worktree was created detached on`)
   }
 
   /**
