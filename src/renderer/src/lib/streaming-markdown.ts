@@ -115,7 +115,8 @@ export function splitStreamingMarkdown(source: string): StreamingMarkdownSplit |
     if (HTML_BLOCK.test(line)) return null
 
     if (inQuote) {
-      if (QUOTE_FENCE.test(line)) return null
+      // A bare fence also opens code lazily inside the quote, so guard any fence shape.
+      if (QUOTE_FENCE.test(line) || FENCE_INSIDE.test(line)) return null
       if (BLOCKQUOTE_LINE.test(line)) { i += 1; continue }
       if (BLANK_LINE.test(line)) {
         const next = nextContent[i + 1]!
