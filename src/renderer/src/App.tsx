@@ -65,7 +65,7 @@ export default function App(): React.JSX.Element {
   const [view, setView] = useState<View>({ kind: 'dashboard' })
   const [newChatOpen, setNewChatOpen] = useState(false)
   const [worktreesOpen, setWorktreesOpen] = useState(false)
-  const [abandonTarget, setAbandonTarget] = useState<{ workId: string; row: WorktreeRemovalRow } | null>(null)
+  const [abandonTarget, setAbandonTarget] = useState<{ workId: string; row: WorktreeRemovalRow; deleteChat?: boolean } | null>(null)
   const [abandonBusy, setAbandonBusy] = useState(false)
 
   useEffect(() => subscribeTranscripts(qc), [qc])
@@ -177,9 +177,48 @@ export default function App(): React.JSX.Element {
   const waitingCount = inboxCount
 
   const deleteChat = (sessionId: string, title: string): void => {
+    const work = (works.data ?? []).find((w) => w.sessionId === sessionId && w.state !== 'ABANDONED')
+    if (work && work.ownsWorktree !== false) {
+      // A chat whose pipeline owns a worktree deletes through the safe abandon
+      // preview: folder removal is always signature-bound per worktree-safety,
+      // never hidden behind a plain confirm. Abandon removes the worktree,
+      // branch, OpenCode session and this chat together.
+      void window.revva.work
+        .abandonPreflight(work.id)
+        .then((p) => {
+          const row: WorktreeRemovalRow = {
+            label: p.ticketKey || title,
+            directory: p.worktreeDir,
+            branch: p.branch,
+            preflight: p.worktree
+          }
+          setAbandonTarget({ workId: work.id, row, deleteChat: true })
+        })
+        .catch((err) => {
+          // The safe preview refuses (locked, unregistered, unreadable state).
+          // Escape hatch: dropping the conversation while keeping the folder is
+          // never destructive, so it stays available as an explicit choice.
+          if (
+            confirm(
+              `The worktree could not be previewed (${(err as Error).message}).\n\nDelete just the chat and keep the worktree and branch?`
+            )
+          ) {
+            void window.revva.chat.remove(sessionId).then((note) => {
+              if (note) alert(`Removed from Revva, but ${note}`)
+              qc.invalidateQueries({ queryKey: ['chats'] })
+              qc.invalidateQueries({ queryKey: ['works'] })
+              if (view.kind === 'chat' && view.sessionId === sessionId) setView({ kind: 'dashboard' })
+            }).catch((err) => alert(`Could not delete conversation: ${(err as Error).message}`))
+          }
+        })
+      return
+    }
     if (!confirm(`Delete chat "${title}"? The OpenCode session is removed too.`)) return
-    void window.revva.chat.remove(sessionId).then(() => {
+    void window.revva.chat.remove(sessionId).then((note) => {
+      // An honest note: the chat left Revva's list, the OpenCode session may not.
+      if (note) alert(`Removed from Revva, but ${note}`)
       qc.invalidateQueries({ queryKey: ['chats'] })
+      if (work) qc.invalidateQueries({ queryKey: ['works'] })
       if (view.kind === 'chat' && view.sessionId === sessionId) setView({ kind: 'dashboard' })
     }).catch((err) => alert(`Could not delete conversation: ${(err as Error).message}`))
   }
@@ -203,13 +242,18 @@ export default function App(): React.JSX.Element {
   )
   /** Flat (unticketed) chats at rest — not thinking, not waiting on you, not
    *  unread, not the one on screen — the bulk-clear target. Unknown activity
-   *  (service down) shows no button at all. */
+   *  (service down) shows no button at all. A chat whose pipeline owns a
+   *  worktree is never swept up here: its folder may hold unsaved work, so it
+   *  must go through the per-worktree preview one at a time. */
+  const ownsWorktree = (sessionId: string): boolean =>
+    (works.data ?? []).some((w) => w.sessionId === sessionId && w.state !== 'ABANDONED' && w.ownsWorktree !== false)
   const idleChats =
     status.data?.state === 'connected' && activity.data
       ? (chats.data ?? []).filter(
           (c) =>
             !c.ticketKey &&
             !c.unread &&
+            !ownsWorktree(c.sessionId) &&
             !pending.some((item) => item.sessionID === c.sessionId) &&
             !activity.data?.includes(c.sessionId) &&
             !(view.kind === 'chat' && view.sessionId === c.sessionId)
@@ -222,13 +266,25 @@ export default function App(): React.JSX.Element {
         `Delete ${idleChats.length} idle chat${idleChats.length === 1 ? '' : 's'}?\n\n${idleChats
           .slice(0, 8)
           .map((c) => `• ${c.title}`)
-          .join('\n')}${idleChats.length > 8 ? `\n…and ${idleChats.length - 8} more` : ''}\n\nThe OpenCode sessions are removed too.`
+          .join('\n')}${idleChats.length > 8 ? `\n…and ${idleChats.length - 8} more` : ''}\n\nThe OpenCode sessions are removed too. Chats that own a worktree are left alone — delete those one at a time to see what the folder holds.`
       )
     )
       return
-    void Promise.all(idleChats.map((c) => window.revva.chat.remove(c.sessionId).catch((err) => console.error('[chat] clear idle failed:', c.sessionId, err)))).then(() =>
+    void Promise.all(
+      idleChats.map((c) =>
+        window.revva.chat
+          .remove(c.sessionId)
+          .then((note) => (note ? `${c.title}: ${note}` : undefined))
+          .catch((err) => {
+            console.error('[chat] clear idle failed:', c.sessionId, err)
+            return `${c.title}: could not be deleted — ${(err as Error).message}`
+          })
+      )
+    ).then((notes) => {
+      const problems = notes.filter((n): n is string => !!n)
+      if (problems.length) alert(`Removed from Revva, but ${problems.length} chat${problems.length === 1 ? '' : 's'} not fully cleared:\n\n${problems.slice(0, 8).map((p) => `• ${p}`).join('\n')}`)
       qc.invalidateQueries({ queryKey: ['chats'] })
-    )
+    })
   }
   const abandonWork = (workId: string, ticketKey: string): void => {
     const work = works.data?.find((w) => w.id === workId)
@@ -591,10 +647,10 @@ export default function App(): React.JSX.Element {
       <WorktreeRemovalDialog
         open={abandonTarget !== null}
         onOpenChange={(next) => !next && !abandonBusy && setAbandonTarget(null)}
-        title={`Abandon ${abandonTarget?.row.label ?? ''}?`}
-        intro="Removal re-fingerprints staged contents and files right before deleting and aborts when content was staged, added, removed, or normally edited since this preview — a same-size rewrite with restored timestamps, or writes after the last check, cannot be caught. Tick the worktree if its files would be destroyed. Unmerged branches are always kept."
+        title={abandonTarget?.deleteChat ? `Delete chat ${abandonTarget.row.label}?` : `Abandon ${abandonTarget?.row.label ?? ''}?`}
+        intro="Revva re-checks right before deleting and aborts if anything changed since this preview. Tick the worktree if its files would be destroyed. Unmerged branches are always kept. The OpenCode session and this chat are removed together with the work."
         rows={abandonTarget ? [abandonTarget.row] : []}
-        confirmLabel="Abandon"
+        confirmLabel={abandonTarget?.deleteChat ? 'Delete' : 'Abandon'}
         busy={abandonBusy}
         onConfirm={(confirmedDirs) => abandonTarget && confirmAbandon(abandonTarget.workId, confirmedDirs)}
       />

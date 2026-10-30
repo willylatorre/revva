@@ -1,9 +1,12 @@
 /**
  * Board: JQL for the user's current-sprint assigned tickets, mapped to the Ticket DTO,
  * with issue-link dependency detection (blocks → dependsOn). Cached in sqlite.
+ * The details dialog fetches description + comments + sub-tasks + all links on open
+ * (fetchTicketDetail); the board itself stays lean.
  */
-import { jiraMcp, parseToolResult, type JiraTicket } from './mcp'
+import { jiraMcp, commentListFrom, type JiraLink, type JiraTicket } from './mcp'
 import { getDb } from '../db'
+import { collectAdfText } from '../util'
 
 const BOARD_JQL =
   "sprint in openSprints() AND assignee = currentUser() AND statusCategory != Done ORDER BY rank ASC"
@@ -41,16 +44,31 @@ function mapIssue(raw: RawIssue): JiraTicket | undefined {
   const category = (status?.statusCategory ?? status?.status_category) as Record<string, unknown> | undefined
   const issuetype = f.issuetype as Record<string, unknown> | undefined
   const dependsOn: string[] = []
+  const links: JiraLink[] = []
   for (const link of arr(f.issuelinks ?? f.issueLinks)) {
     const l = link as Record<string, unknown>
     const type = (l.type ?? {}) as Record<string, unknown>
-    const inward = String(type.inward ?? '').toLowerCase()
-    // "Blocks X" outward → X is parent; "is blocked by Y" inward → Y is parent.
-    const outwardIn = l.outward ?? l.inward
-    const other = (l.inwardIssue ?? l.outwardIssue ?? {}) as Record<string, unknown>
-    if (typeof outwardIn === 'string' && (outwardIn.toLowerCase().includes('blocked by') || inward.includes('is blocked by'))) {
-      if (typeof other.key === 'string') dependsOn.push(other.key)
-    }
+    // outward/inward live on the link TYPE; the linked issue sits in outwardIssue (this
+    // issue is the outward side, read type.outward) or inwardIssue (read type.inward).
+    const outward = l.outwardIssue as Record<string, unknown> | undefined
+    const inward = l.inwardIssue as Record<string, unknown> | undefined
+    const other = outward ?? inward
+    if (!other || typeof other.key !== 'string') continue
+    const phrase = String((outward ? type.outward : type.inward) ?? type.name ?? 'links')
+    const oFields = (other.fields ?? {}) as Record<string, unknown>
+    const oStatus = oFields.status as Record<string, unknown> | undefined
+    links.push({
+      key: other.key,
+      summary: String(oFields.summary ?? ''),
+      status: oStatus?.name ? String(oStatus.name) : undefined,
+      statusCategory: ((oStatus?.statusCategory as Record<string, unknown> | undefined)?.key as string | undefined) ?? undefined,
+      typeName: String(type.name ?? ''),
+      phrase
+    })
+    // Dependency spellings: stock "is blocked by" plus sites with custom link types
+    // ("depends on"). Deliberately excludes the reverse direction ("dependend by", "blocks").
+    const p = phrase.toLowerCase()
+    if (p.includes('blocked by') || p.includes('depends on')) dependsOn.push(other.key)
   }
   const points = f.story_points ?? f.storyPoints ?? f['customfield_10004']
   // Classic projects: parent is an object; team-managed: parent is a one-element array.
@@ -67,6 +85,7 @@ function mapIssue(raw: RawIssue): JiraTicket | undefined {
     subtaskCount: Array.isArray(f.subtasks) ? (f.subtasks as unknown[]).length : undefined,
     parentKey: typeof parentKey === 'string' ? parentKey : undefined,
     dependsOn,
+    links,
     url: raw.self ? String(raw.self) : undefined,
     raw
   }
@@ -85,24 +104,57 @@ export async function fetchBoard(): Promise<JiraTicket[]> {
     'parent'
   ])
   const tickets = issuesFrom(result).map(mapIssue).filter((t): t is JiraTicket => !!t)
+  withWebUrls(tickets)
 
   cacheTickets(tickets)
   return tickets
 }
 
-/** Sub-tickets (fields.subtasks) of one issue, mapped like board cards. */
-export async function fetchSubtasks(key: string): Promise<JiraTicket[]> {
+/**
+ * `self` in API payloads is the REST URL, not the web page — browsers would open JSON.
+ * Point the ticket and its links at the site's /browse/ pages when we know the site;
+ * the renderer falls back to hiding the link otherwise.
+ */
+function withWebUrls(tickets: JiraTicket[]): void {
+  const site = jiraMcp.siteWebUrl()
+  if (!site) return
+  for (const t of tickets) {
+    t.url = `${site}/browse/${t.key}`
+    for (const l of t.links) l.url = `${site}/browse/${l.key}`
+  }
+}
+
+/** What the details dialog shows. Only fetched when the dialog opens, never on board load. */
+export type TicketDetail = {
+  ticket: JiraTicket
+  /** Ticket body as markdown (ADF falls back to plain text). */
+  description: string
+  comments: Array<{ id?: string; author?: string; body: string; created?: string }>
+  subtasks: JiraTicket[]
+}
+
+/** Body + comments + sub-tasks + all links of one issue, in a single getIssue round-trip. */
+export async function fetchTicketDetail(key: string): Promise<TicketDetail> {
   if (!jiraMcp.connected) await jiraMcp.connect()
 
-  const raw = (await jiraMcp.getIssue(key, ['summary', 'status', 'issuetype', 'subtasks', 'parent'])) as
-    | RawIssue
-    | { issue?: RawIssue }
+  const raw = (await jiraMcp.getIssue(key, [
+    'summary',
+    'description',
+    'status',
+    'issuetype',
+    'subtasks',
+    'issuelinks',
+    'parent',
+    'comment'
+  ])) as RawIssue | { issue?: RawIssue }
   const issue = (raw as RawIssue)?.fields ? (raw as RawIssue) : (raw as { issue?: RawIssue }).issue
-  const fields = issue?.fields
+  if (!issue?.fields) throw new Error(`Jira returned no fields for ${key}.`)
+  const fields = issue.fields
+
   // Sub-tasks sit under fields.subtasks; some envelopes hoist them to the top level.
-  // Last resort: the board search cached the same array in the parent's raw row.
-  let list = arr(fields?.subtasks ?? (raw as Record<string, unknown>)?.subtasks)
-  if (list.length === 0) {
+  let list = arr(fields.subtasks ?? (raw as Record<string, unknown>)?.subtasks)
+  if (list.length === 0 && arr(fields.issuelinks ?? fields.issueLinks).length === 0) {
+    // Both reads came back empty — fall back to what the board search cached for this key.
     const row = getDb().prepare('SELECT raw FROM ticket WHERE key = ?').get(key) as { raw: string } | undefined
     if (row) {
       try {
@@ -113,17 +165,36 @@ export async function fetchSubtasks(key: string): Promise<JiraTicket[]> {
       }
     }
   }
-  const tickets = list
+  const subtasks = list
     .map((s) => {
       const r = s as RawIssue
       // Some feeds key subtasks by id only; key is what every downstream uses.
-      // Sub-task summaries inside the parent payload are sometimes missing.
       return mapIssue({ ...r, key: r.key ?? (r.id ? String(r.id) : undefined) })
     })
     .filter((t): t is JiraTicket => !!t)
 
-  cacheTickets(tickets)
-  return tickets
+  const description = (() => {
+    const d = fields.description
+    if (typeof d === 'string') return d.trim()
+    if (d && typeof d === 'object') return collectAdfText(d).join('\n').trim()
+    return ''
+  })()
+
+  const comments = commentListFrom(fields.comment)
+    .map((c) => ({
+      id: c.id ? String(c.id) : undefined,
+      author: c.author?.displayName ?? 'unknown',
+      // Comment bodies are markdown or ADF depending on how they were written.
+      body: typeof c.body === 'string' ? c.body : collectAdfText(c.body).join(' ').trim(),
+      created: c.created
+    }))
+    .filter((c) => c.body.length > 0)
+
+  const ticket = mapIssue(issue)
+  if (!ticket) throw new Error(`Jira returned an unreadable issue for ${key}.`)
+  withWebUrls([ticket, ...subtasks])
+  cacheTickets([ticket, ...subtasks])
+  return { ticket, description, comments, subtasks }
 }
 
 function cacheTickets(tickets: JiraTicket[]): void {
@@ -162,6 +233,7 @@ export async function getTicket(key: string): Promise<JiraTicket | undefined> {
       subtaskCount: row.subtask_count ?? undefined,
       parentKey: row.parent_key ?? undefined,
       dependsOn: JSON.parse(row.depends_on) as string[],
+      links: linksFromRaw(row.raw),
       raw: JSON.parse(row.raw) as unknown
     }
   }
@@ -170,5 +242,14 @@ export async function getTicket(key: string): Promise<JiraTicket | undefined> {
     return mapIssue(raw)
   } catch {
     return undefined
+  }
+}
+
+/** Links are not a column; re-read them from the cached raw payload. */
+function linksFromRaw(raw: string): JiraLink[] {
+  try {
+    return mapIssue(JSON.parse(raw) as RawIssue)?.links ?? []
+  } catch {
+    return []
   }
 }

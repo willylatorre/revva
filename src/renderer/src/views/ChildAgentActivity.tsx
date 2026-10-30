@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowUp, Bot, ChevronRight, CircleAlert, Loader2 } from 'lucide-react'
+import { ArrowUp, Bot, ChevronRight, CircleAlert, CircleCheck, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
 import { useTranscriptVisibility } from '@/lib/transcript-stream'
+import { cn } from '@/lib/utils'
+import { childStatusLabel, childStatusTone, durationSince, statusTones, useChildActivity, type ChildStatusLabel } from '@/lib/agent-status'
 import type { AgentSession } from '@shared/types'
 import { FormCard, PermissionCard, useInbox } from './InboxView'
 
@@ -41,6 +43,7 @@ export function ChildAgentActivity({ sessionId, renderTranscript }: {
     staleTime: 30_000
   })
   const activity = useQuery({ queryKey: ['session-activity'], queryFn: () => window.revva.session.active(), enabled: false })
+  const live = useChildActivity(visible)
   const inbox = useInbox()
   useEffect(() => window.revva.events.on((event) => {
     if ((event.kind === 'session.children' && (event.sessionId === sessionId || event.sessionId === '*')) || (event.kind === 'chat.idle' && event.sessionId === '*')) {
@@ -79,15 +82,37 @@ export function ChildAgentActivity({ sessionId, renderTranscript }: {
     self: inbox.some((item) => item.sessionID === id),
     below: inbox.some((item) => item.branch?.includes(id))
   })
-  const status = (row: AgentSession): string => waitsOn(row.sessionId).self ? 'Needs you'
-    : activity.data?.includes(row.sessionId) ? 'Running'
-      : row.outcome === 'failed' ? 'Failed' : row.outcome === 'interrupted' ? 'Stopped' : row.outcome === 'succeeded' ? 'Finished' : 'Ready'
-  const rowIcon = (row: AgentSession, label: string): ReactNode => {
-    if (label === 'Needs you' || label === 'Failed') return <CircleAlert className="size-3.5 shrink-0 text-status-warning" />
+  const status = (row: AgentSession): ChildStatusLabel => childStatusLabel(row, {
+    needsYou: waitsOn(row.sessionId).self,
+    running: activity.data?.includes(row.sessionId) ?? false
+  })
+  /** What a running child is doing right now; the row-level glance the panel lacked. */
+  const detail = (row: AgentSession, label: ChildStatusLabel): string => {
+    if (label !== 'Running') return ''
+    const liveRow = live.data?.[row.sessionId]
+    if (liveRow?.activity) return liveRow.activity
+    return liveRow?.lastActivityAt && Date.now() - liveRow.lastActivityAt >= 60_000
+      ? `No new activity for ${durationSince(Date.now() - liveRow.lastActivityAt)}`
+      : 'Working…'
+  }
+  const rowIcon = (row: AgentSession, label: ChildStatusLabel): ReactNode => {
+    if (label === 'Needs you') return <CircleAlert className="size-3.5 shrink-0 text-status-warning" />
+    if (label === 'Failed') return <CircleAlert className="size-3.5 shrink-0 text-status-error" />
     if (waitsOn(row.sessionId).below) return <CircleAlert className="size-3.5 shrink-0 text-status-warning" aria-label="A delegated agent below needs you" />
-    if (label === 'Running') return <Loader2 className="size-3.5 shrink-0 motion-safe:animate-spin" />
+    if (label === 'Running') return <Loader2 className={cn('size-3.5 shrink-0 motion-safe:animate-spin', statusTones.active.text)} />
+    if (label === 'Finished') return <CircleCheck className={cn('size-3.5 shrink-0', statusTones.approved.text)} />
     return <Bot className="size-3.5 shrink-0" />
   }
+  /** Collapsed-header glance: progress first, then what the newest running agent is doing. */
+  const labels = rows.map((row) => status(row))
+  const runningCount = labels.filter((label) => label === 'Running').length
+  const doneCount = labels.filter((label) => label === 'Finished' || label === 'Failed' || label === 'Stopped').length
+  const newest = rows.filter((_, i) => labels[i] === 'Running')
+    .sort((a, b) => (live.data?.[b.sessionId]?.lastActivityAt ?? 0) - (live.data?.[a.sessionId]?.lastActivityAt ?? 0))[0]
+  const glance = runningCount
+    ? `${runningCount} running${newest ? ` · ${detail(newest, 'Running')}` : ''}`
+    : doneCount === rows.length && doneCount > 0 ? `${doneCount}/${rows.length} finished`
+      : 'Open output to inspect'
 
   if (!rows.length && !children.isError) return null
   return <section aria-label="Delegated agents" className="shrink-0 border-t px-3 py-2 sm:px-6">
@@ -96,21 +121,25 @@ export function ChildAgentActivity({ sessionId, renderTranscript }: {
         <ChevronRight className="size-3 shrink-0 group-data-[open]/agents:rotate-90" />
         <span className="font-medium">Agents ({rows.length})</span>
         {waiting.length > 0 && <Badge variant="secondary">{waiting.length} waiting on you</Badge>}
-        <span className="ml-auto text-muted-foreground">Open output to inspect</span>
+        <span className="ml-auto truncate pl-2 text-muted-foreground" title={glance}>{glance}</span>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="mt-1 flex max-h-32 flex-col overflow-y-auto">
+        <div className="mt-1 flex max-h-40 flex-col overflow-y-auto">
           {rows.map((row) => {
             const label = status(row)
             const below = !waitsOn(row.sessionId).self && waitsOn(row.sessionId).below
-            return <Button key={row.sessionId} type="button" variant="ghost" className="h-auto min-w-0 justify-start px-2 py-2 text-xs" aria-label={`${row.title}: ${label}${below ? ' (a delegated agent below needs you)' : ''}. Open agent output`} onClick={(event) => {
+            const note = detail(row, label)
+            return <Button key={row.sessionId} type="button" variant="ghost" className="h-auto min-w-0 justify-start gap-2 px-2 py-2 text-left text-xs" aria-label={`${row.title}: ${label}${below ? ' (a delegated agent below needs you)' : ''}${note ? `. ${note}` : ''}. Open agent output`} onClick={(event) => {
               trigger.current = event.currentTarget
               setPath([row])
             }}>
               {rowIcon(row, label)}
-              <span className="min-w-0 flex-1 truncate text-left" title={row.title}>{row.title}</span>
-              {row.agentID && <span className="max-w-32 truncate text-muted-foreground">{row.agentID}</span>}
-              <span className="shrink-0 text-muted-foreground">{label}</span>
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="min-w-0 truncate text-left" title={row.title}>{row.title}</span>
+                {note && <span className="min-w-0 truncate text-left text-[11px] text-muted-foreground" title={note}>{note}</span>}
+              </span>
+              {row.agentID && <span className="max-w-32 shrink-0 truncate text-muted-foreground">{row.agentID}</span>}
+              <span className={cn('shrink-0 rounded-full px-1.5 py-px text-[10px] font-medium', statusTones[childStatusTone(label)].pill)}>{label}</span>
             </Button>
           })}
         </div>
@@ -136,7 +165,7 @@ export function ChildAgentActivity({ sessionId, renderTranscript }: {
                 const label = status(row)
                 const below = !waitsOn(row.sessionId).self && waitsOn(row.sessionId).below
                 return <Button key={row.sessionId} type="button" variant="ghost" className="h-auto w-full min-w-0 justify-start px-2 py-2 text-xs" aria-label={`${row.title}: ${label}${below ? ' (a delegated agent below needs you)' : ''}. Open agent output`} onClick={() => { setPath((current) => [...current, row]); stop.reset(); send.reset() }}>
-                  {rowIcon(row, label)}<span className="min-w-0 flex-1 truncate text-left">{row.title}</span><span className="shrink-0 text-muted-foreground">{label}</span>
+                  {rowIcon(row, label)}<span className="min-w-0 flex-1 truncate text-left">{row.title}</span><span className={cn('shrink-0 rounded-full px-1.5 py-px text-[10px] font-medium', statusTones[childStatusTone(label)].pill)}>{label}</span>
                 </Button>
               })}
               {descendants.isError && <p role="alert" className="text-xs text-destructive">Could not load delegated agents. <Button size="xs" variant="outline" onClick={() => void descendants.refetch()}>Retry</Button></p>}

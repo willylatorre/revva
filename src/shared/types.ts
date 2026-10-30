@@ -137,6 +137,15 @@ export interface AgentSession {
   updatedAt: number
 }
 
+/** Live one-line activity for a delegated child; pushed coalesced while it runs. */
+export const agentActivitySchema = z.object({
+  sessionId: z.string(),
+  /** Latest real execution event; absent once the run ends. */
+  activity: z.string().optional(),
+  lastActivityAt: z.number().optional()
+})
+export type AgentActivity = z.infer<typeof agentActivitySchema>
+
 export type ChatRole = 'user' | 'assistant' | 'system' | 'tool'
 
 /** One transcript image: a local attachment URL, or an optimistic base64 data URL. */
@@ -374,6 +383,21 @@ export type PromptRefs = z.infer<typeof promptRefsSchema>
 
 /* ---------- Jira board / works ---------- */
 
+/** One issue link as Jira reads it from this ticket's side: "is blocked by PROJ-1". */
+export const jiraLinkSchema = z.object({
+  key: z.string(),
+  summary: z.string(),
+  status: z.string().optional(),
+  statusCategory: z.string().optional(),
+  /** Link type name ("Blocks", "Relates", …). */
+  typeName: z.string(),
+  /** Directional phrase from this ticket's point of view, e.g. "is blocked by". */
+  phrase: z.string(),
+  /** Web URL for the linked issue, when the site's browse URL is known. */
+  url: z.string().optional()
+})
+export type JiraLink = z.infer<typeof jiraLinkSchema>
+
 export const ticketSchema = z.object({
   key: z.string(),
   id: z.string(),
@@ -385,11 +409,24 @@ export const ticketSchema = z.object({
   subtaskCount: z.number().optional(),
   parentKey: z.string().optional(),
   dependsOn: z.array(z.string()),
+  /** All issue links (sub-tasks arrive through detail.subtasks, links through this). */
+  links: z.array(jiraLinkSchema).optional(),
   url: z.string().optional(),
   /** The raw MCP payload, for fields the DTO does not model yet. */
   raw: z.unknown().optional()
 })
 export type Ticket = z.infer<typeof ticketSchema>
+
+/** Everything the ticket details dialog shows; fetched when the dialog opens. */
+export const ticketDetailSchema = z.object({
+  ticket: ticketSchema,
+  description: z.string(),
+  comments: z.array(
+    z.object({ id: z.string().optional(), author: z.string().optional(), body: z.string(), created: z.string().optional() })
+  ),
+  subtasks: z.array(ticketSchema)
+})
+export type TicketDetail = z.infer<typeof ticketDetailSchema>
 
 export const jiraStatusSchema = z.object({
   connected: z.boolean(),
@@ -498,7 +535,11 @@ export const workSummarySchema = z.object({
   blocker: z.string().optional(),
   updatedAt: z.number(),
   /** Pipeline reached a human-relevant state since the user last opened the cockpit. */
-  unread: z.boolean().optional()
+  unread: z.boolean().optional(),
+  /** Review rounds are numbered from the cycle start; this is the newest round's position (1-based). */
+  reviewRound: z.number().optional(),
+  /** Rounds the cycle allows before it hands off to a human (reviewMaxRounds). */
+  reviewRoundsMax: z.number().optional()
 })
 export type WorkSummary = z.infer<typeof workSummarySchema>
 
@@ -849,6 +890,8 @@ export const pushEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('session.transcript'), sessionId: z.string(), reset: z.boolean().optional() }),
   /** Output tokens / elapsed time since Send; frozen when the interaction ends. */
   z.object({ kind: z.literal('session.throughput'), items: z.array(throughputSnapshotSchema) }),
+  /** Latest execution activity for delegated children, coalesced to ~1/s. */
+  z.object({ kind: z.literal('agent.activity'), items: z.array(agentActivitySchema) }),
   z.object({ kind: z.literal('work.updated'), workId: z.string(), state: workStateSchema }),
   z.object({ kind: z.literal('work.queue'), workId: z.string() }),
   z.object({ kind: z.literal('work.delta'), workId: z.string(), sessionId: z.string(), messageId: z.string(), text: z.string() }),
@@ -918,7 +961,7 @@ export interface RevvaApi {
     setTicket(sessionId: string, ticketKey: string | null): Promise<void>
     /** Clears the unread dot after the user has looked at the chat. */
     markSeen(sessionId: string): Promise<void>
-    remove(sessionId: string): Promise<void>
+    remove(sessionId: string): Promise<string | undefined>
   }
   session: {
     children(sessionId: string): Promise<AgentSession[]>
@@ -937,6 +980,8 @@ export interface RevvaApi {
     copyId(sessionId: string): Promise<void>
     contextUsage(sessionId: string): Promise<{ tokens: number; limit?: number; providerID: string; modelID: string } | null>
     active(): Promise<string[]>
+    /** Live activity lines for delegated children currently known to be running. */
+    agentActivity(): Promise<AgentActivity[]>
     /** Messages waiting in OpenCode's inbox for this session. */
     queue(sessionId: string): Promise<QueuedMessage[]>
     cancelQueued(sessionId: string, inboxId: string): Promise<void>
@@ -962,7 +1007,8 @@ export interface RevvaApi {
     disconnect(): Promise<{ connected: boolean; expired: boolean; expiresAt?: number }>
     board(): Promise<Ticket[]>
     /** Sub-tickets of one issue, in board order. */
-    subtasks(key: string): Promise<Ticket[]>
+    /** Body, comments, sub-tasks and links of one issue; fetched when the details dialog opens. */
+    detail(key: string): Promise<TicketDetail>
   }
   work: {
     start(input: StartWorkInput): Promise<WorkSummary>

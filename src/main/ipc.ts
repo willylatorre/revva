@@ -11,6 +11,7 @@ import { keepAwake } from './keep-awake'
 import { openCodeService } from './opencode/service'
 import { chatManager } from './opencode/chats'
 import { agentSessions } from './opencode/agent-sessions'
+import { agentActivityMeter } from './opencode/agent-activity'
 import { coordinator } from './opencode/coordinator'
 import { throughputMeter } from './opencode/throughput'
 import { transcriptSubscriptions } from './opencode/transcript-subscriptions'
@@ -23,7 +24,7 @@ import { triageManager } from './opencode/triage'
 import { listAgents, listModels, listSkills } from './opencode/inventory'
 import { jiraAuth } from './jira/auth'
 import { jiraMcp } from './jira/mcp'
-import { fetchBoard, fetchSubtasks } from './jira/board'
+import { fetchBoard, fetchTicketDetail } from './jira/board'
 import { commentWatcher } from './jira/watch'
 import { workManager } from './pipeline/works'
 import { worktreeManager } from './worktrees'
@@ -292,6 +293,7 @@ export function registerIpc(): void {
   })
   ipcMain.handle(IPC.sessionContextUsage, (_e, sessionId: string) => contextUsage(String(sessionId)))
   ipcMain.handle(IPC.sessionActive, async () => Object.keys(await openCodeService.api.session.active()))
+  ipcMain.handle(IPC.sessionAgentActivity, () => agentActivityMeter.list())
   ipcMain.handle(IPC.sessionQueue, (_e, sessionId: string) => chatManager.queue(String(sessionId)))
   ipcMain.handle(IPC.sessionQueueCancel, (_e, sessionId: string, inboxId: string) =>
     chatManager.cancelQueued(String(sessionId), String(inboxId))
@@ -341,7 +343,7 @@ export function registerIpc(): void {
     return jiraAuth.status()
   })
   ipcMain.handle(IPC.boardFetch, () => fetchBoard())
-  ipcMain.handle(IPC.jiraSubtasks, (_e, key: string) => fetchSubtasks(String(key)))
+  ipcMain.handle(IPC.jiraDetail, (_e, key: string) => fetchTicketDetail(String(key)))
 
   /* ---------- works (ticket pipeline) ---------- */
   ipcMain.handle(IPC.workStart, (_e, input: unknown) => workManager.start(startWorkInputSchema.parse(input)))

@@ -452,16 +452,29 @@ class ChatManager {
     getDb().prepare('UPDATE chat SET title = ? WHERE session_id = ?').run(title.trim() || 'Chat', sessionId)
   }
 
-  async remove(sessionId: string): Promise<void> {
+  /**
+   * Remove a conversation. The local index always goes — deleting while the
+   * service is down must work — but the caller gets a note when the OpenCode
+   * session itself survived, so the UI never claims a removal it did not make.
+   */
+  async remove(sessionId: string): Promise<string | undefined> {
     await workManager.forgetConversation(sessionId)
-    try {
-      await openCodeService.api.session.remove({ sessionID: sessionId })
-    } catch {
-      // already gone remotely — fine, remove local index anyway
+    let note: string | undefined
+    if (!openCodeService.connected) {
+      note = 'The OpenCode service is not connected, so its session was left in place.'
+    } else {
+      try {
+        await openCodeService.api.session.remove({ sessionID: sessionId })
+      } catch (err) {
+        // 'already gone' arrives here too and cannot be told apart reliably;
+        // an honest generic note beats silently keeping an orphan session.
+        note = `The OpenCode session could not be deleted: ${describeError(err)}`
+      }
     }
     getDb().prepare('DELETE FROM chat WHERE session_id = ?').run(sessionId)
     agentSessions.forgetChildren(sessionId)
     sessionIndex.forget(sessionId)
+    return note
   }
 
   private touch(sessionId: string): void {

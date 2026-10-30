@@ -18,6 +18,7 @@ import { cn } from '@/lib/utils'
 import { EMPTY_STREAM, beginTranscriptSnapshot, displayTranscript, finishTranscriptSnapshot, mergeHistory, mergeTranscript, streamKey, transcriptReady, useTranscriptVisibility, type LiveTranscript } from '@/lib/transcript-stream'
 import { transcriptRequest } from '@/lib/transcript-requests'
 import { SessionStats } from '@/components/session-stats'
+import { AgentsGlance } from '@/components/agents-glance'
 import { MD_COMPONENTS } from '@/components/message-markdown'
 import { Choice } from './NewChatDialog'
 import type { AgentInfo, ChatMessage, ChatToolCall, FileHit, ModelRef, PromptImage, PromptRefs, QueuedMessage, SkillInfo, WorkSummary, TranscriptPage } from '@shared/types'
@@ -591,8 +592,9 @@ export function TranscriptView({
         )}
       </div>
       <div ref={scrollWrapRef} className="relative flex min-h-0 flex-1 flex-col">
-        <div className="pointer-events-none absolute right-3 top-3 z-10 sm:right-6">
+        <div className="pointer-events-none absolute right-3 top-3 z-10 flex flex-col items-end gap-2 sm:right-6">
           <SessionStats sessionId={sessionId} running={running} />
+          {!readOnly && !hideChildAgents && <AgentsGlance key={`glance-${sessionId}`} sessionId={sessionId} work={work} />}
         </div>
         <ScrollArea className="min-h-0 flex-1">
           <div className="mx-auto flex max-w-3xl flex-col gap-4 px-6 pb-5 pt-16">

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, FolderX, GitBranch, RefreshCw, Sparkles, Trash2, TriangleAlert } from 'lucide-react'
+import { AlertTriangle, FolderX, GitBranch, RefreshCw, Sparkles, Trash2 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -85,7 +85,7 @@ export function WorktreeRemovalDialog({
           </DialogTitle>
           <DialogDescription>
             {intro ??
-              'Revva fingerprints the staged contents and files below (blob hashes, sizes, timestamps, inodes) and re-checks right before acting: content staged, added, removed or normally edited since this preview aborts with nothing touched. Limits: a writer that rewrites identical-size content and restores exact timestamps slips past the fingerprint, and anything written between the last check and the deletion cannot be caught — removal is not race-free. Tick each worktree whose files would be destroyed.'}
+              'Revva shows what removal destroys (counts, never contents) and re-checks right before deleting. Tick each worktree whose files would go.'}
           </DialogDescription>
         </DialogHeader>
 
@@ -157,13 +157,12 @@ export function WorktreeRemovalDialog({
  * "Clean up with agent" hands the whole set to one chat whose agent checks each
  * worktree for work that would be lost and removes only the provably-safe ones
  * with plain `git worktree remove` (git itself refuses anything dirty; locked
- * and live-work worktrees are off-limits). Manual removal first asks the main
- * process for a removal proof (worktree-safety.ts) that counts exactly what
- * removal would destroy; anything that destroys content needs its own checkbox
- * in the confirmation dialog, and every removal is re-proven — and aborted on
- * any drift — immediately before it happens. Deletion is not race-free against
- * external writers; the dialog says so. Branches are deleted only when git
- * allows it (`branch -d` — never unmerged work).
+ * and live-work worktrees are off-limits). Each row also has its own delete
+ * button: removal first asks the main process for a removal proof
+ * (worktree-safety.ts) that counts exactly what removal would destroy; anything
+ * that destroys content needs a checkbox in the confirmation dialog, and every
+ * removal is re-proven — and aborted on any drift — immediately before it
+ * happens. Branches are deleted only when git allows it (`branch -d`).
  */
 export function WorktreesDialog({
   open,
@@ -175,7 +174,6 @@ export function WorktreesDialog({
   onOpenChat: (sessionId: string) => void
 }): React.JSX.Element {
   const qc = useQueryClient()
-  const [selected, setSelected] = useState<Set<string>>(new Set())
   const [notes, setNotes] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const [confirming, setConfirming] = useState<WorktreeRemovalRow[] | null>(null)
@@ -190,20 +188,8 @@ export function WorktreesDialog({
 
   const items = useMemo(() => worktrees.data ?? [], [worktrees.data])
   const keyOf = (w: WorktreeInfo): string => `${w.repoDir}\u0000${w.directory}`
-  const removable = useMemo(() => items.filter((w) => !w.busy), [items])
 
-  const toggle = (w: WorktreeInfo): void => {
-    if (w.busy) return
-    setSelected((old) => {
-      const next = new Set(old)
-      const key = keyOf(w)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
-      return next
-    })
-  }
-
-  /** Step 1: ask main for the removal proofs of everything selected. A throw = refused path. */
+  /** Step 1: ask main for the removal proof of the row the user pressed. A throw = refused path. */
   const preflight = useMutation({
     mutationFn: async (targets: WorktreeInfo[]) => {
       const rows: WorktreeRemovalRow[] = []
@@ -226,7 +212,7 @@ export function WorktreesDialog({
     onSuccess: ({ rows, refusedText }) => {
       if (refusedText.length > 0) setNotes(refusedText)
       if (rows.length > 0) setConfirming(rows)
-      else setError('Every selected worktree was refused — nothing will be removed.')
+      else setError('That worktree was refused — nothing will be removed.')
     },
     onError: (err) => setError((err as Error).message)
   })
@@ -235,7 +221,6 @@ export function WorktreesDialog({
   const remove = useMutation({
     mutationFn: async ({ rows, confirmedDirs }: { rows: WorktreeRemovalRow[]; confirmedDirs: Set<string> }) => {
       const results: string[] = []
-      const removedDirs: string[] = []
       for (const r of rows) {
         try {
           const note = await window.revva.worktrees.remove({
@@ -245,22 +230,15 @@ export function WorktreesDialog({
             confirmed: confirmedDirs.has(r.preflight.directory)
           })
           results.push(note ?? `Removed ${r.preflight.directory}.`)
-          removedDirs.push(r.preflight.directory)
         } catch (err) {
           results.push(`Failed on ${r.preflight.directory}: ${(err as Error).message}`)
         }
       }
-      return { results, removedDirs }
+      return { results }
     },
-    onSuccess: ({ results, removedDirs }) => {
+    onSuccess: ({ results }) => {
       setConfirming(null)
       setNotes((old) => [...old.filter((n) => !n.startsWith('Refused ')), ...results])
-      // Keep failed selections; drop only what actually disappeared.
-      setSelected((old) => {
-        const next = new Set(old)
-        for (const dir of removedDirs) for (const key of [...next]) if (key.endsWith(`\u0000${dir}`)) next.delete(key)
-        return next
-      })
       void qc.invalidateQueries({ queryKey: ['worktrees'] })
       void qc.invalidateQueries({ queryKey: ['works'] })
     },
@@ -287,8 +265,6 @@ export function WorktreesDialog({
     onError: (err) => setError(`Could not start the cleanup: ${(err as Error).message}`)
   })
 
-  const targets = items.filter((w) => selected.has(keyOf(w)))
-  const allSelected = removable.length > 0 && removable.every((w) => selected.has(keyOf(w)))
   const busy = preflight.isPending || remove.isPending
 
   return (
@@ -300,24 +276,11 @@ export function WorktreesDialog({
             {worktrees.data && <Badge variant="secondary">{items.length}</Badge>}
           </DialogTitle>
           <DialogDescription>
-            Linked worktrees across your repos. Clean up with agent hands them to one chat that
-            checks each for uncommitted or unpushed work and removes only the ones that hold
-            nothing. Manual removal always previews first: you see exactly what
-            gets destroyed (counts, never contents), tick each worktree whose files would go, and
-            revva re-fingerprints staged contents and files right before deleting — aborting when
-            content was staged, added, removed, or normally edited since the preview. A writer that
-            restores exact file timestamps and sizes can still slip past the fingerprint, and files
-            written between the last check and the deletion cannot be caught at all: removal is not
-            race-free. Branches are deleted only when git allows it; unmerged ones are always kept.
+            Linked worktrees across your repos. Remove asks for confirmation before
+            deleting anything; branches are kept unless git allows deleting them.
           </DialogDescription>
         </DialogHeader>
 
-        {items.length > 10 && (
-          <p className="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-400">
-            <TriangleAlert className="size-4 shrink-0" aria-hidden="true" />
-            More than 10 linked worktrees. Review any you no longer need.
-          </p>
-        )}
         {worktrees.isError && worktrees.data && (
           <p role="alert" className="text-xs text-destructive">Couldn’t refresh worktrees. Showing the last known list.</p>
         )}
@@ -332,15 +295,6 @@ export function WorktreesDialog({
             <RefreshCw className={cn('mr-1 size-3.5', worktrees.isFetching && 'animate-spin')} />
             Refresh
           </Button>
-          {removable.length > 0 && (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => setSelected(allSelected ? new Set() : new Set(removable.map(keyOf)))}
-            >
-              {allSelected ? 'Deselect all' : 'Select all'}
-            </Button>
-          )}
           <Button
             size="sm"
             variant="outline"
@@ -351,17 +305,6 @@ export function WorktreesDialog({
           >
             {cleanup.isPending ? <RefreshCw className="mr-1 size-3.5 animate-spin" /> : <Sparkles className="mr-1 size-3.5" />}
             {cleanup.isPending ? 'Starting…' : 'Clean up with agent'}
-          </Button>
-          <Button
-            size="sm"
-            variant="destructive"
-            disabled={targets.length === 0 || busy}
-            onClick={() => preflight.mutate(targets)}
-          >
-            <Trash2 className="mr-1 size-3.5" />
-            {preflight.isPending
-              ? 'Checking…'
-              : `Remove ${targets.length > 0 ? targets.length : ''}`.trim()}
           </Button>
         </div>
 
@@ -385,21 +328,13 @@ export function WorktreesDialog({
           {items.map((w) => {
             const key = keyOf(w)
             return (
-              <label
+              <div
                 key={key}
                 className={cn(
-                  'flex cursor-pointer items-center gap-3 border-b px-3 py-2 text-[12px] last:border-b-0 hover:bg-accent/50',
-                  w.busy && 'cursor-not-allowed opacity-60',
-                  selected.has(key) && 'bg-accent/40'
+                  'flex items-center gap-3 border-b px-3 py-2 text-[12px] last:border-b-0 hover:bg-accent/50',
+                  w.busy && 'opacity-60'
                 )}
               >
-                <input
-                  type="checkbox"
-                  className="size-3.5 shrink-0 accent-primary"
-                  checked={selected.has(key)}
-                  disabled={w.busy}
-                  onChange={() => toggle(w)}
-                />
                 <div className="min-w-0 flex-1">
                   <div className="truncate font-mono" title={w.directory}>
                     {w.directory.split('/').slice(-1)[0]}
@@ -419,8 +354,18 @@ export function WorktreesDialog({
                   {!w.busy && !w.prunable && !w.locked && (w.revva || w.inWorktreeRoot) && (
                     <Badge variant="outline" className="text-muted-foreground">revva</Badge>
                   )}
+                  <Button
+                    size="icon-sm"
+                    variant="ghost"
+                    className="text-muted-foreground hover:text-destructive"
+                    title={w.busy ? 'In use by live work' : 'Remove this worktree'}
+                    disabled={w.busy || busy}
+                    onClick={() => preflight.mutate([w])}
+                  >
+                    <Trash2 className="size-3.5" />
+                  </Button>
                 </div>
-              </label>
+              </div>
             )
           })}
         </div>

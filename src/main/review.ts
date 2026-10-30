@@ -15,6 +15,7 @@ import { realpath } from 'node:fs/promises'
 import { BrowserWindow } from 'electron'
 import { openCodeService, describeError } from './opencode/service'
 import { eventBus, type RawEvent } from './opencode/bus'
+import { ActivityTracker } from './opencode/activity-text'
 import { inboxManager } from './opencode/inbox'
 import { sessionIndex } from './opencode/session-index'
 import { streamBuffer } from './opencode/stream-buffer'
@@ -105,7 +106,7 @@ interface TrackedSession {
   timer?: NodeJS.Timeout
   remainingMs: number
   deadline: number
-  tools?: Map<string, { name: string; detail?: string }>
+  tracker: ActivityTracker
 }
 
 interface ReviewScope {
@@ -205,7 +206,7 @@ class ReviewManager {
         }
         if (!this.sessions.has(row.sessionId)) {
           db.prepare("UPDATE review SET status = 'running', error = NULL, updated_at = ? WHERE id = ?").run(Date.now(), row.id)
-          this.trackSession(row.sessionId, { workId: work.id, round, role: row.role as ReviewRole | 'fixer', reviewId: row.id, remainingMs: SESSION_TIMEOUT_MS, deadline: 0 })
+          this.trackSession(row.sessionId, { workId: work.id, round, role: row.role as ReviewRole | 'fixer', reviewId: row.id, remainingMs: SESSION_TIMEOUT_MS, deadline: 0, tracker: new ActivityTracker() })
           this.activity.set(row.id, { activity: 'Reconnecting to OpenCode…', lastActivityAt: Date.now() })
         }
         restored.push(row)
@@ -466,7 +467,7 @@ class ReviewManager {
         metadata: { revva: { kind: 'review', workId: work.id, round, role } }
       })
       this.update(reviewId, 'running', undefined, undefined, session.id)
-      this.trackSession(session.id, { workId: work.id, round, role, reviewId, remainingMs: SESSION_TIMEOUT_MS, deadline: 0 })
+      this.trackSession(session.id, { workId: work.id, round, role, reviewId, remainingMs: SESSION_TIMEOUT_MS, deadline: 0, tracker: new ActivityTracker() })
       await coordinator.prepareReview(session.id)
       if (this.sessions.get(session.id)?.reviewId !== reviewId) return
       await api.session.prompt({ sessionID: session.id, text: reviewerPrompt(role, work, round, skills, scope) })
@@ -596,37 +597,7 @@ class ReviewManager {
     const tracked = this.sessions.get(sessionId)
     if (!tracked) return
 
-    let activity: string | undefined
-    if (e.type === 'session.execution.started') activity = 'Waiting for model…'
-    else if (e.type.startsWith('session.reasoning.')) activity = 'Reasoning'
-    else if (e.type.startsWith('session.text.')) activity = 'Generating response'
-    else if (e.type === 'session.tool.input.started' && typeof data.id === 'string') {
-      const name = String(data.name ?? 'tool')
-      tracked.tools ??= new Map()
-      tracked.tools.set(data.id, { name })
-      activity = `Preparing: ${name}`
-    }
-    else if (e.type === 'session.tool.called' || e.type === 'session.tool.success' || e.type === 'session.tool.failed') {
-      const id = String(data.id ?? '')
-      const tool = tracked.tools?.get(id)
-      const input = data.input as Record<string, unknown> | undefined
-      const detail = input && ['command', 'path', 'filePath', 'pattern', 'query', 'url', 'description'].map((key) => input[key]).find((value) => typeof value === 'string') || tool?.detail
-      const name = String(data.name ?? tool?.name ?? 'tool')
-      const verb = e.type === 'session.tool.called' ? 'Running' : e.type === 'session.tool.failed' ? 'Failed' : 'Finished'
-      activity = `${verb}: ${name}${detail ? ` · ${String(detail).split('\n')[0]?.slice(0, 180)}` : ''}`
-      if (e.type === 'session.tool.called') {
-        tracked.tools ??= new Map()
-        tracked.tools.set(id, { name, detail: detail ? String(detail) : undefined })
-      } else tracked.tools?.delete(id)
-    } else if (e.type === 'session.tool.progress') {
-      const tool = tracked.tools?.get(String(data.id ?? ''))
-      activity = `Running: ${tool?.name ?? 'tool'}${tool?.detail ? ` · ${tool.detail.split('\n')[0]?.slice(0, 180)}` : ''}`
-    } else if (e.type === 'session.retry.scheduled') {
-      activity = `Retrying model · attempt ${String(data.attempt ?? '')}`
-    } else if (e.type === 'session.status') {
-      const status = data.status as { type?: string; message?: string } | undefined
-      if (status?.type === 'retry') activity = `Retrying${status.message ? ` · ${status.message.slice(0, 180)}` : ''}`
-    }
+    const activity = tracked.tracker.describe(e)
     if (activity) {
       this.activity.set(tracked.reviewId, { activity, lastActivityAt: Date.now() })
       this.activityWork.set(tracked.workId, tracked.round)
@@ -824,7 +795,7 @@ class ReviewManager {
           metadata: { revva: { kind: 'review', workId, round, role: 'fixer' } }
         }))
       this.update(reviewId, 'running', undefined, undefined, session.id)
-      this.trackSession(session.id, { workId, round, role: 'fixer', reviewId, remainingMs: SESSION_TIMEOUT_MS, deadline: 0 })
+      this.trackSession(session.id, { workId, round, role: 'fixer', reviewId, remainingMs: SESSION_TIMEOUT_MS, deadline: 0, tracker: new ActivityTracker() })
       await coordinator.prepareReview(session.id)
       if (this.sessions.get(session.id)?.reviewId !== reviewId) return
       this.starting.delete(workId)

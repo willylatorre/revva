@@ -62,6 +62,7 @@ const api: RevvaApi = {
     copyId: (sessionId) => ipcRenderer.invoke(IPC.sessionCopyId, sessionId),
     contextUsage: (sessionId) => ipcRenderer.invoke(IPC.sessionContextUsage, sessionId),
     active: () => ipcRenderer.invoke(IPC.sessionActive),
+    agentActivity: () => ipcRenderer.invoke(IPC.sessionAgentActivity),
     queue: (sessionId) => ipcRenderer.invoke(IPC.sessionQueue, sessionId),
     cancelQueued: (sessionId, inboxId) => ipcRenderer.invoke(IPC.sessionQueueCancel, sessionId, inboxId),
     promoteQueued: (sessionId, inboxId) => ipcRenderer.invoke(IPC.sessionQueuePromote, sessionId, inboxId)
@@ -79,7 +80,7 @@ const api: RevvaApi = {
     reconnect: () => ipcRenderer.invoke(IPC.jiraReconnect),
     disconnect: () => ipcRenderer.invoke(IPC.jiraDisconnect),
     board: () => ipcRenderer.invoke(IPC.boardFetch),
-    subtasks: (key) => ipcRenderer.invoke(IPC.jiraSubtasks, key)
+    detail: (key) => ipcRenderer.invoke(IPC.jiraDetail, key)
   },
   work: {
     start: (input) => ipcRenderer.invoke(IPC.workStart, input),

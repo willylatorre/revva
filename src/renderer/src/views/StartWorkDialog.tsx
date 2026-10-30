@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
-import { Rocket, MessageCircleQuestion } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { FolderOpen, Rocket, MessageCircleQuestion } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -41,6 +41,7 @@ export function StartWorkDialog({
   onClose: () => void
   onStarted: (work: WorkSummary) => void
 }): React.JSX.Element {
+  const qc = useQueryClient()
   const workspaces = useQuery({ queryKey: ['workspaces'], queryFn: () => window.revva.workspace.list() })
   const agents = useQuery({ queryKey: ['agents'], queryFn: () => window.revva.inventory.agents() })
   const models = useQuery({ queryKey: ['models'], queryFn: () => window.revva.inventory.models() })
@@ -85,6 +86,19 @@ export function StartWorkDialog({
   const parentWorkId = parentChoice ?? suggestedParent?.id ?? '__none__'
   const validParent = parentWorkId === '__none__' || works.some((w) => w.id === parentWorkId && w.repoDir === selectedRepo && w.state !== 'ABANDONED')
 
+  /** Empty-workspace escape hatch: pick a folder here, save it like Setup does, select it. */
+  const addFolder = useMutation({
+    mutationFn: async () => {
+      const picked = await window.revva.workspace.pickFolder()
+      if (!picked) throw new Error('cancelled')
+      return window.revva.workspace.add(picked)
+    },
+    onSuccess: (w) => {
+      setWorkspaceId(w.id)
+      void qc.invalidateQueries({ queryKey: ['workspaces'] })
+    }
+  })
+
   const start = useMutation({
     mutationFn: async () => {
       const dir = selectedRepo
@@ -127,18 +141,41 @@ export function StartWorkDialog({
         <div className="space-y-4">
           <div className="space-y-1.5">
             <Label htmlFor="work-workspace">Workspace</Label>
-            <Select value={workspace?.id ?? ''} onValueChange={(v) => { setWorkspaceId(v); setRepoDir(''); setParentChoice(undefined) }}>
-              <SelectTrigger id="work-workspace" size="sm" className="w-full">
-                <SelectValue placeholder="Add a folder in Setup…" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  {(workspaces.data ?? []).map((w) => (
-                    <SelectItem key={w.id} value={w.id} className="font-mono text-xs">{w.path}</SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
+            {(workspaces.data?.length ?? 0) === 0 ? (
+              // An empty Select is a dead end: the placeholder named Setup but nothing here
+              // could fix it. Pick the folder in place; it becomes a saved workspace.
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="w-full justify-start gap-1.5 text-xs font-normal text-muted-foreground"
+                disabled={addFolder.isPending}
+                onClick={() => addFolder.mutate()}
+              >
+                {addFolder.isPending ? 'Choosing folder…' : 'Choose a workspace folder…'}
+              </Button>
+            ) : (
+              <Select value={workspace?.id ?? ''} onValueChange={(v) => { setWorkspaceId(v); setRepoDir(''); setParentChoice(undefined) }}>
+                <SelectTrigger id="work-workspace" size="sm" className="w-full">
+                  <SelectValue placeholder="Choose a workspace…" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {(workspaces.data ?? []).map((w) => (
+                      <SelectItem key={w.id} value={w.id} className="font-mono text-xs">{w.path}</SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            )}
+            {workspaces.isError && (
+              <p className="text-xs text-destructive">Saved workspaces could not be loaded. You can still choose a folder here.</p>
+            )}
+            {addFolder.isError && (
+              <p className="text-xs text-destructive">
+                {addFolder.error instanceof Error && addFolder.error.message !== 'cancelled' ? addFolder.error.message : 'No folder chosen.'}
+              </p>
+            )}
           </div>
 
           <div className="space-y-1.5">

@@ -34,11 +34,17 @@ Original plans stamped commit `830a20f` (typecheck clean there as of 2026-10-28)
 | 011 | [Choose queue or steer in the composer](011-queue-or-steer-composer.md) | P2 | S–M | — | TODO |
 | 012 | [Add human diff comments to ticket work](012-inline-diff-review.md) | P2 | L | 010 | TODO |
 | 016 | [Reduce conversation lag and background OpenCode work](016-visible-conversation-performance.md) | P1 | L | Completed 002/003/004/006 | BLOCKED on remaining verification, 2026-10-29 — prefix cache + visible-only delivery verified live; controlled benchmark 1,042,963→19,690 streamed chars (displayed) and →0 (background); remaining: reviewer-dialog live pass, compaction boundary, review gates, forced form recovery |
+| 017 | [Isolate live transcript rendering](017-isolate-live-transcript-rendering.md) | P1 | M | — | DONE in isolated branch at d2384db, 2026-10-30 — advisor reviewed and reran gates; manual UI/profiler checks outstanding; not merged |
+| 018 | [Parse only the mutable Markdown tail](018-incremental-streaming-markdown.md) | P1 | L | 017 | DONE in isolated branch at fcc5f07, 2026-10-30 — advisor reran gates plus disposable AST/render probes; manual UI/profiler outstanding; not merged |
+| 019 | [Suppress proven-redundant tool history refreshes](019-suppress-redundant-tool-history-refresh.md) | P1 | M | 017, 018 | IN PROGRESS — same isolated executor worktree |
+| 020 | [Cache completed Markdown representations](020-cache-completed-markdown.md) | P2 | M | 017–019 | TODO |
+| 021 | [Measure a faster Markdown parser](021-markdown-parser-performance-spike.md) | P3 | M–L | 017–020 | TODO — adopt only on measured end-to-end benefit |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (one-line reason) | REJECTED (one-line rationale)
 
 ## Dependency notes
 
+- **017–021** are PandaCode-inspired follow-ups selected by the owner on 2026-10-30, stamped `298d1df`. Execute sequentially in `/Users/a2023362/.local/share/opencode/worktree/9d8a46/pandacode-streaming-performance`; preserve the original dirty collaboration work. Existing 016 mechanisms are implemented but its outstanding manual matrix remains unchanged. In particular, 019 must retain the ten-second heartbeat and step-streamed recovery hints. 021 is a measurement spike, not authorization to force a parser replacement without evidence. Nothing is automatically merged or pushed.
 - **016** was added 2026-10-29 at `e079ed2` against the current dirty working tree. It extends completed streaming/polling/recovery plans rather than repeating them. Covers visible-only incremental detail, timing diagnostics, cancellation, lighter metrics/previews, bounded reconnect scans, and targeted refreshes. Its verification notes record the current unrelated typecheck failures. No source fixes were applied during this audit/handoff.
 - **New plans 009–012** were added 2026-10-29 at commit `ecf85d5` and are based on a dirty working tree. Preserve and inspect the existing in-flight changes; don't reset, stash, or overwrite them. Execute 009 → 010 → 011 → 012 as the recommended order; 012 depends on 010 because feedback must not weaken the review gate. 011 is otherwise independent.
 - **002 after 001**: both edit `wire()`/`ensureSchema` regions of the same

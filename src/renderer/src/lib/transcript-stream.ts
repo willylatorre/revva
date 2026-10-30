@@ -1,6 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { useSyncExternalStore } from 'react'
-import type { ChatMessage, ChatToolCall, ReviewRow, PushEvent, TranscriptAttachment } from '@shared/types'
+import type { ChatMessage, ChatToolCall, ReviewRow, PushEvent, TranscriptAttachment, AgentActivity } from '@shared/types'
 
 export const streamKey = (sessionId: string): readonly string[] => ['session-stream', sessionId]
 export type LiveTranscript = Record<string, ChatMessage>
@@ -290,6 +290,18 @@ export function subscribeTranscripts(qc: QueryClient): () => void {
       for (const item of event.items) qc.setQueryData(['session-throughput', item.sessionId], item)
       return
     }
+    if (event.kind === 'agent.activity') {
+      // One map of live child activity lines; empty entries clear finished runs.
+      qc.setQueryData<Record<string, AgentActivity>>(['agent-activity'], (old) => {
+        const next = { ...(old ?? {}) }
+        for (const item of event.items) {
+          if (item.activity) next[item.sessionId] = item
+          else delete next[item.sessionId]
+        }
+        return next
+      })
+      return
+    }
     if (event.kind === 'work.queue') {
       void qc.invalidateQueries({ queryKey: ['work-queue', event.workId] })
       void qc.invalidateQueries({ queryKey: ['ship-checks', event.workId] })
@@ -307,8 +319,13 @@ export function subscribeTranscripts(qc: QueryClient): () => void {
     } else if (event.kind === 'chat.tool') {
       refresh(event.sessionId)
     } else if (event.kind === 'review.updated') {
-      const previous = new Map((qc.getQueryData<ReviewRow[]>(['reviews', event.workId]) ?? []).map((row) => [row.id, row.status]))
+      const previousRows = qc.getQueryData<ReviewRow[]>(['reviews', event.workId]) ?? []
+      const previous = new Map(previousRows.map((row) => [row.id, row.status]))
       qc.setQueryData(['reviews', event.workId], event.reviews)
+      // The cycle position shown in quick-glance surfaces comes from the work row,
+      // and a new round alone does not change the pipeline state — refetch it.
+      const previousRound = previousRows.reduce((max, row) => Math.max(max, row.round), 0)
+      if (previousRound !== event.round) void qc.invalidateQueries({ queryKey: ['works'] }, { cancelRefetch: false })
       // Activity-only pushes should not refetch every transcript each second.
       for (const row of event.reviews) if (row.sessionId && row.status !== 'running' && row.status !== 'pending' && previous.get(row.id) !== row.status) refresh(row.sessionId)
     } else if (event.kind === 'service' && event.status.state === 'connected') {

@@ -16,6 +16,7 @@ import { jiraMcp } from './jira/mcp'
 import { commentWatcher } from './jira/watch'
 import { sessionIndex } from './opencode/session-index'
 import { agentSessions } from './opencode/agent-sessions'
+import { agentActivityMeter } from './opencode/agent-activity'
 import { coordinator } from './opencode/coordinator'
 import { throughputMeter } from './opencode/throughput'
 import { wireSessionMetrics } from './opencode/session-metrics'
@@ -71,6 +72,7 @@ app.whenReady().then(() => {
 
   eventBus.start()
   agentSessions.wire()
+  agentActivityMeter.wire()
   coordinator.wire()
   chatManager.wire()
   throughputMeter.wire()

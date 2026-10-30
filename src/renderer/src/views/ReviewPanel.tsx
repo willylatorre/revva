@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
+import { isReviewStopped, reviewRowTone, reviewStatusLabels, statusTones } from '@/lib/agent-status'
 import { SessionIdButton, TranscriptView, type TranscriptDrive } from './Chat'
 import type { PipelineRole, PushEvent, ReviewRow, WorkState } from '@shared/types'
 
@@ -13,20 +14,6 @@ const roleMeta: Partial<Record<PipelineRole, { label: string; icon: React.JSX.El
   testAudit: { label: 'Test audit', icon: <ShieldQuestion className="size-3.5" /> },
   impeccable: { label: 'UI review', icon: <Sparkles className="size-3.5" /> },
   fixer: { label: 'Fixer', icon: <Wrench className="size-3.5" /> }
-}
-
-const statusMeta: Record<string, { cls: string; text: string }> = {
-  pending: { cls: 'text-muted-foreground', text: 'queued' },
-  running: { cls: 'text-sky-600 dark:text-sky-400', text: 'reviewing…' },
-  approved: { cls: 'text-emerald-600 dark:text-emerald-400', text: 'approved' },
-  changes: { cls: 'text-amber-600 dark:text-amber-400', text: 'changes requested' },
-  error: { cls: 'text-destructive', text: 'error' },
-  skipped: { cls: 'text-muted-foreground', text: 'skipped' }
-}
-
-/** A deliberate stop is not a provider failure, even though it blocks approval. */
-export function isReviewStopped(row: ReviewRow): boolean {
-  return row.status === 'error' && /stopped by you|was interrupted|^cancelled$/i.test(row.error ?? '')
 }
 
 /**
@@ -134,7 +121,8 @@ function ReviewChip({
 }): React.JSX.Element {
   const meta = roleMeta[row.role] ?? { label: row.role, icon: <ScanEye className="size-3.5" /> }
   const stopped = isReviewStopped(row)
-  const st: { cls: string; text: string } = stopped ? { cls: 'text-muted-foreground', text: 'stopped' } : statusMeta[row.status] ?? { cls: 'text-muted-foreground', text: row.status }
+  const tone = reviewRowTone(row)
+  const text = stopped ? 'stopped' : reviewStatusLabels[row.status] ?? row.status
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -151,16 +139,16 @@ function ReviewChip({
             <span className="block font-medium">{meta.label}</span>
             {(row.agentID || row.model) && <span className="block truncate text-xs text-muted-foreground">{[row.agentID, row.model ? modelName || row.model.id : undefined].filter(Boolean).join(' · ')}</span>}
           </span>
-          {stopped ? <CirclePause className="size-3 text-muted-foreground" /> : row.status === 'running' ? (
-            <Loader2 className={cn('size-3 animate-spin', st.cls)} />
+          {stopped ? <CirclePause className={cn('size-3', statusTones[tone].text)} /> : row.status === 'running' ? (
+            <Loader2 className={cn('size-3 animate-spin', statusTones[tone].text)} />
           ) : row.status === 'approved' ? (
-            <CircleCheck className={cn('size-3', st.cls)} />
+            <CircleCheck className={cn('size-3', statusTones[tone].text)} />
           ) : row.status === 'changes' ? (
-            <CircleAlert className={cn('size-3', st.cls)} />
+            <CircleAlert className={cn('size-3', statusTones[tone].text)} />
           ) : row.status === 'error' ? (
-            <XCircle className={cn('size-3', st.cls)} />
+            <XCircle className={cn('size-3', statusTones[tone].text)} />
           ) : null}
-          <span className={cn('shrink-0 text-xs', st.cls)}>{st.text}</span>
+          <span className={cn('shrink-0 rounded-full px-1.5 py-px text-[10px] font-medium', statusTones[tone].pill)}>{text}</span>
         </button>
       </TooltipTrigger>
       <TooltipContent className="max-w-xs text-[11px]">

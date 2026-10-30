@@ -7,7 +7,9 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { cn } from '@/lib/utils'
 import type { ReviewRow, WorkSummary } from '@shared/types'
 import { FormCard, PermissionCard, useInbox } from './InboxView'
-import { isReviewStopped, ReviewAgentActions, ReviewTranscript } from './ReviewPanel'
+import { isReviewStopped, reviewRowTone, reviewStatusLabels, statusTones as toneColors } from '@/lib/agent-status'
+import type { StatusTone } from '@/lib/agent-status'
+import { ReviewAgentActions, ReviewTranscript } from './ReviewPanel'
 
 const roles = [
   { role: 'sol', label: 'Sol-loop', icon: ScanEye },
@@ -16,12 +18,12 @@ const roles = [
   { role: 'fixer', label: 'Fixer', icon: Wrench }
 ] as const
 
-const statusTones = {
-  neutral: { surface: 'hover:bg-accent', text: 'text-muted-foreground' },
-  active: { surface: 'border-status-info/20 bg-status-info/5 hover:bg-status-info/10', text: 'text-status-info' },
-  approved: { surface: 'border-status-success/20 bg-status-success/5 hover:bg-status-success/10', text: 'text-status-success' },
-  attention: { surface: 'border-status-warning/20 bg-status-warning/5 hover:bg-status-warning/10', text: 'text-status-warning' },
-  error: { surface: 'border-status-error/20 bg-status-error/5 hover:bg-status-error/10', text: 'text-status-error' }
+const cardSurfaces: Record<StatusTone, string> = {
+  neutral: 'hover:bg-accent',
+  active: 'border-status-info/20 bg-status-info/5 hover:bg-status-info/10',
+  approved: 'border-status-success/20 bg-status-success/5 hover:bg-status-success/10',
+  attention: 'border-status-warning/20 bg-status-warning/5 hover:bg-status-warning/10',
+  error: 'border-status-error/20 bg-status-error/5 hover:bg-status-error/10'
 } as const
 
 function statusText(row: ReviewRow | undefined): string {
@@ -29,7 +31,7 @@ function statusText(row: ReviewRow | undefined): string {
   if (isReviewStopped(row)) return 'Stopped'
   if (row.role === 'fixer' && row.status === 'running') return 'Fixing'
   if (row.role === 'fixer' && row.status === 'approved') return 'Fixes complete'
-  return { pending: 'Queued', running: 'Reviewing', approved: 'Approved', changes: 'Changes requested', error: 'Needs attention', skipped: 'Not needed' }[row.status]
+  return reviewStatusLabels[row.status]
 }
 
 function duration(ms: number): string {
@@ -71,6 +73,9 @@ export function WorkAgentActivity({ work }: { work: WorkSummary }): React.JSX.El
     ...meta,
     row: rows.filter((row) => row.role === meta.role && (meta.role === 'fixer' ? row.round <= round : row.round === round)).at(-1)
   }))
+  /** Gate progress within the current round: approved required reviewers / required reviewers. */
+  const required = current.filter(({ row }) => row && row.status !== 'skipped')
+  const approved = required.filter(({ row }) => row?.status === 'approved').length
   const selected = rows.find((row) => row.id === selectedId)
   const active = current.filter(({ row }) => row?.status === 'running' || row?.status === 'pending')
   const waiting = inbox.filter((item) => rows.some((row) => row.sessionId === item.sessionID))
@@ -87,7 +92,7 @@ export function WorkAgentActivity({ work }: { work: WorkSummary }): React.JSX.El
   return <section aria-label="Review and fixer activity" className="shrink-0 px-3 py-2 sm:px-6">
     <div className="mx-auto flex max-w-3xl flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
-        <Badge variant="secondary">{work.state === 'FIXING' ? 'Fixing' : work.state === 'BUILDING' ? 'Previous review' : 'Review'}{round ? ` · round ${round}` : ''}</Badge>
+        <Badge className={cn('border-transparent', toneColors[busy ? 'active' : work.state === 'APPROVED' ? 'approved' : work.state === 'WAITING_HUMAN' ? 'attention' : 'neutral'].pill)}>{work.state === 'FIXING' ? 'Fixing' : work.state === 'BUILDING' ? 'Previous review' : 'Review'}{work.reviewRound ? ` · round ${work.reviewRound}/${work.reviewRoundsMax ?? '?'}` : ''}{required.length ? ` · ${approved}/${required.length} approved` : ''}</Badge>
         <span role="status" aria-live="polite" className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={summary}>{summary}</span>
         {(busy || work.state === 'WAITING_HUMAN') && <Button type="button" size="xs" variant="ghost" disabled={stop.isPending} onClick={() => stop.mutate()}>{stop.isPending ? 'Stopping…' : 'Stop review'}</Button>}
       </div>
@@ -95,9 +100,8 @@ export function WorkAgentActivity({ work }: { work: WorkSummary }): React.JSX.El
         {current.map(({ role, label, icon: Icon, row }) => {
           const running = row?.status === 'running'
           const pending = inbox.some((item) => item.sessionID === row?.sessionId)
-          const tone = statusTones[pending || row?.status === 'changes' ? 'attention'
-            : row?.status === 'error' ? 'error' : row?.status === 'approved' ? 'approved'
-              : running ? 'active' : 'neutral']
+          const toneKey: StatusTone = pending ? 'attention' : row ? reviewRowTone(row) : 'neutral'
+          const tone = { surface: cardSurfaces[toneKey], text: toneColors[toneKey].text, pill: toneColors[toneKey].pill }
           const quietFor = now - (row?.lastActivityAt ?? row?.updatedAt ?? now)
           const detail = pending ? 'Waiting on you — open to respond' : running
             ? row?.activity ?? 'Waiting for activity…'
@@ -110,7 +114,7 @@ export function WorkAgentActivity({ work }: { work: WorkSummary }): React.JSX.El
               {(pending || row?.status === 'error') && <CircleAlert className={cn('ml-auto size-3 shrink-0', tone.text)} />}
               {row?.status === 'approved' && <CircleCheck className={cn('ml-auto size-3 shrink-0', tone.text)} />}
             </span>
-            <span className={cn('truncate', tone.text)}>{pending ? 'Waiting on you' : statusText(row)}{running && row ? ` · ${duration(now - row.createdAt)}` : ''}</span>
+            <span className={cn('w-fit max-w-full truncate rounded-full px-1.5 py-px text-[10px] font-medium', tone.pill)}>{pending ? 'Waiting on you' : statusText(row)}{running && row ? ` · ${duration(now - row.createdAt)}` : ''}</span>
             <span className="truncate text-foreground/65" title={detail}>{running && !pending && quietFor >= 60_000 ? `No new activity for ${duration(quietFor)}` : detail}</span>
           </button>
         })}

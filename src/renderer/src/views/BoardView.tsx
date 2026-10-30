@@ -1,5 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import {
   ChevronDown,
   Clock4,
@@ -36,6 +38,7 @@ import {
 } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { CardBoard, CardZone, moveToZone } from '@/components/CardBoard'
+import { MD_COMPONENTS } from '@/components/message-markdown'
 import { useCardOrder } from '@/lib/use-card-order'
 import { cn } from '@/lib/utils'
 import { jiraStatusClasses, jiraTypeClasses } from '@/lib/status-colors'
@@ -216,7 +219,7 @@ export function BoardView({
       </div>
 
       {detailsTicket && (
-        <TicketSubtasksDialog
+        <TicketDetailsDialog
           ticket={detailsTicket}
           activeByTicket={activeByTicket}
           onClose={() => setDetailsTicket(null)}
@@ -623,11 +626,12 @@ function TicketCard({
 }
 
 /**
- * Ticket details: the parent card opened from the board, listing its sub-tasks
- * with a Start button on each — starting a sub-task opens the same Start flow
- * as starting the ticket itself, scoped to that sub-task.
+ * Ticket details: opened from a board card, it fetches the full issue once
+ * (description, comments, sub-tasks, all issue links) — the board search never
+ * carries these. Sub-tasks keep their Start button: starting one opens the same
+ * Start flow as the ticket itself, scoped to that sub-task.
  */
-function TicketSubtasksDialog({
+function TicketDetailsDialog({
   ticket,
   activeByTicket,
   onClose,
@@ -640,22 +644,25 @@ function TicketSubtasksDialog({
   onStartSubtask: (sub: Ticket) => void
   onStartWork: (workId: string) => void
 }): React.JSX.Element {
-  const subtasks = useQuery({
-    queryKey: ['subtasks', ticket.key],
-    queryFn: () => window.revva.jira.subtasks(ticket.key),
-    // Every deliberate open refetches: sub-task status changes server-side, and
+  const detail = useQuery({
+    queryKey: ['ticket-detail', ticket.key],
+    queryFn: () => window.revva.jira.detail(ticket.key),
+    // Every deliberate open refetches: status changes server-side, and
     // a cached (possibly empty) answer must not shadow the truth.
     staleTime: 0
   })
   // Open work first, done at the bottom — a long list opens with what you can start.
   const items = useMemo(() => {
-    const list = subtasks.data ?? []
+    const list = detail.data?.subtasks ?? []
     const isDone = (t: Ticket): boolean => t.statusCategory.toLowerCase() === 'done'
     return [...list.filter((t) => !isDone(t)), ...list.filter(isDone)]
-  }, [subtasks.data])
+  }, [detail.data])
+  // Links are on the card's ticket when the board carried them; the detail fetch
+  // refreshes them. Sub-tasks are not issuelinks, so the sub-task section owns those.
+  const links = detail.data?.ticket.links ?? ticket.links ?? []
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      {/* Wide (sub-task summaries are long) and flex-column: header pinned, only the list scrolls. */}
+      {/* Wide (sub-task summaries are long) and flex-column: header pinned, only the body scrolls. */}
       <DialogContent className="flex max-h-[calc(100vh-4rem)] flex-col overflow-hidden sm:max-w-3xl">
         <DialogHeader className="shrink-0 pr-6">
           <DialogTitle className="flex items-center gap-2">
@@ -679,75 +686,157 @@ function TicketSubtasksDialog({
           <DialogDescription>{ticket.summary}</DialogDescription>
         </DialogHeader>
 
-        <h3 className="flex shrink-0 items-center gap-1.5 text-xs font-semibold text-muted-foreground">
-          <ListChecks className="size-3.5" /> Sub-tasks
-          {subtasks.data && (
-            <Badge variant="secondary" className="text-[10px]">
-              {items.length}
-            </Badge>
-          )}
-        </h3>
-        <div className="-mx-2 min-h-0 flex-1 space-y-1.5 overflow-y-auto px-2 pb-1">
-          {subtasks.isLoading && (
-            <div className="space-y-1.5">
-              {[0, 1, 2].map((i) => (
-                <Skeleton key={i} className="h-12" />
+        <div className="-mx-2 min-h-0 flex-1 space-y-4 overflow-y-auto px-2 pb-1">
+          {/* Description */}
+          <section className="space-y-1.5">
+            <h3 className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">Description</h3>
+            {detail.isLoading && <Skeleton className="h-16" />}
+            {detail.data &&
+              (detail.data.description ? (
+                <div className="rounded-md border bg-muted/30 px-3 py-2 text-[12px] leading-relaxed">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+                    {detail.data.description}
+                  </ReactMarkdown>
+                </div>
+              ) : (
+                <p className="text-xs italic text-muted-foreground">No description.</p>
               ))}
-            </div>
-          )}
-          {subtasks.isError && (
-            <p className="rounded-md border border-destructive/40 px-3 py-2 text-xs text-destructive">
-              {subtasks.error.message}
-            </p>
-          )}
-          {subtasks.data && items.length === 0 && (
-            <p className="rounded-md border border-dashed px-3 py-3 text-center text-xs text-muted-foreground">
-              This ticket has no sub-tasks.
-            </p>
-          )}
-          {items.map((sub) => {
-            const active = activeByTicket.get(sub.key)
-            const done = sub.statusCategory.toLowerCase() === 'done'
-            return (
-              <div
-                key={sub.key}
-                className="flex items-center gap-2 rounded-md border px-2.5 py-1.5"
-              >
-                <a
-                  href={sub.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="shrink-0 font-mono text-[11px] font-medium hover:underline"
-                >
-                  {sub.key}
-                </a>
-                <Badge variant="outline" className={cn('shrink-0 text-[9px]', jiraStatusClasses(sub.status, sub.statusCategory))}>
-                  {sub.status}
+          </section>
+
+          {/* Linked tasks (everything that is not a sub-task row below) */}
+          <section className="space-y-1.5">
+            <h3 className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+              <Link2 className="size-3.5" /> Linked tasks
+              {detail.data && (
+                <Badge variant="secondary" className="text-[10px]">
+                  {links.length}
                 </Badge>
-                {sub.issueTypeName && (
-                  <Badge variant="outline" className={cn('shrink-0 text-[9px]', jiraTypeClasses(sub.issueTypeName))}>
-                    {sub.issueTypeName}
+              )}
+            </h3>
+            {detail.isLoading && <Skeleton className="h-8" />}
+            {detail.data && links.length === 0 && (
+              <p className="text-xs italic text-muted-foreground">No linked tasks.</p>
+            )}
+            {links.map((l) => (
+              <div key={`${l.phrase}:${l.key}`} className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-[12px]">
+                <span className="shrink-0 text-muted-foreground">{l.phrase}</span>
+                <a href={l.url} target="_blank" rel="noreferrer" className="shrink-0 font-mono text-[11px] font-medium hover:underline">
+                  {l.key}
+                </a>
+                {l.status && (
+                  <Badge variant="outline" className={cn('shrink-0 text-[9px]', jiraStatusClasses(l.status, l.statusCategory ?? ''))}>
+                    {l.status}
                   </Badge>
                 )}
-                <p
-                  title={sub.summary}
-                  className={cn('min-w-0 flex-1 truncate text-[12px]', done && 'text-muted-foreground line-through')}
-                >
-                  {sub.summary}
+                <p title={l.summary} className="min-w-0 flex-1 truncate">
+                  {l.summary}
                 </p>
-                {active ? (
-                  <Button size="xs" className="shrink-0" onClick={() => onStartWork(active.id)}>
-                    <Play className="size-3.5" />
-                    {active.state === 'BUILDING' ? 'Watching…' : active.state}
-                  </Button>
-                ) : (
-                  <Button size="xs" className="shrink-0" disabled={done} title={done ? 'Already done' : undefined} onClick={() => onStartSubtask(sub)}>
-                    <Play className="size-3.5" /> Start
-                  </Button>
-                )}
               </div>
-            )
-          })}
+            ))}
+          </section>
+
+          {/* Sub-tasks */}
+          <section className="space-y-1.5">
+            <h3 className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+              <ListChecks className="size-3.5" /> Sub-tasks
+              {detail.data && (
+                <Badge variant="secondary" className="text-[10px]">
+                  {items.length}
+                </Badge>
+              )}
+            </h3>
+            {detail.isLoading && (
+              <div className="space-y-1.5">
+                {[0, 1, 2].map((i) => (
+                  <Skeleton key={i} className="h-12" />
+                ))}
+              </div>
+            )}
+            {detail.isError && (
+              <p className="rounded-md border border-destructive/40 px-3 py-2 text-xs text-destructive">
+                {detail.error.message}
+              </p>
+            )}
+            {detail.data && items.length === 0 && (
+              <p className="rounded-md border border-dashed px-3 py-3 text-center text-xs text-muted-foreground">
+                This ticket has no sub-tasks.
+              </p>
+            )}
+            {items.map((sub) => {
+              const active = activeByTicket.get(sub.key)
+              const done = sub.statusCategory.toLowerCase() === 'done'
+              return (
+                <div
+                  key={sub.key}
+                  className="flex items-center gap-2 rounded-md border px-2.5 py-1.5"
+                >
+                  <a
+                    href={sub.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="shrink-0 font-mono text-[11px] font-medium hover:underline"
+                  >
+                    {sub.key}
+                  </a>
+                  <Badge variant="outline" className={cn('shrink-0 text-[9px]', jiraStatusClasses(sub.status, sub.statusCategory))}>
+                    {sub.status}
+                  </Badge>
+                  {sub.issueTypeName && (
+                    <Badge variant="outline" className={cn('shrink-0 text-[9px]', jiraTypeClasses(sub.issueTypeName))}>
+                      {sub.issueTypeName}
+                    </Badge>
+                  )}
+                  <p
+                    title={sub.summary}
+                    className={cn('min-w-0 flex-1 truncate text-[12px]', done && 'text-muted-foreground line-through')}
+                  >
+                    {sub.summary}
+                  </p>
+                  {active ? (
+                    <Button size="xs" className="shrink-0" onClick={() => onStartWork(active.id)}>
+                      <Play className="size-3.5" />
+                      {active.state === 'BUILDING' ? 'Watching…' : active.state}
+                    </Button>
+                  ) : (
+                    <Button size="xs" className="shrink-0" disabled={done} title={done ? 'Already done' : undefined} onClick={() => onStartSubtask(sub)}>
+                      <Play className="size-3.5" /> Start
+                    </Button>
+                  )}
+                </div>
+              )
+            })}
+          </section>
+
+          {/* Comments */}
+          <section className="space-y-1.5">
+            <h3 className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
+              <MessageSquareText className="size-3.5" /> Comments
+              {detail.data && (
+                <Badge variant="secondary" className="text-[10px]">
+                  {detail.data.comments.length}
+                </Badge>
+              )}
+            </h3>
+            {detail.isLoading && <Skeleton className="h-12" />}
+            {detail.data && detail.data.comments.length === 0 && (
+              <p className="text-xs italic text-muted-foreground">No comments.</p>
+            )}
+            <div className="space-y-2">
+              {detail.data?.comments.map((c, i) => (
+                <figure key={c.id ?? i} className="rounded-md border px-3 py-2">
+                  <figcaption className="mb-1 flex items-baseline gap-2 text-[10px] text-muted-foreground">
+                    <span className="font-medium text-foreground/80">{c.author}</span>
+                    {c.created && <span>{new Date(c.created).toLocaleString()}</span>}
+                  </figcaption>
+                  <div className="text-[12px] leading-relaxed">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+                      {c.body}
+                    </ReactMarkdown>
+                  </div>
+                </figure>
+              ))}
+            </div>
+          </section>
         </div>
       </DialogContent>
     </Dialog>

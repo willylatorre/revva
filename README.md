@@ -141,7 +141,7 @@ Not a server platform. No Vercel/Neon, no sandboxes, no second agent runtime. re
 - **Electron + electron-vite + React + TypeScript + Tailwind** — desktop shell and UI.
 - **shadcn/ui** — component library for the renderer. Prefer existing components and compositions before creating custom UI (see [docs/FRONTEND.md](docs/FRONTEND.md)).
 - **`@opencode/client`** (official TS client) + `@opencode/client/service` — discovers/starts the opencode background service and drives it over HTTP/SSE. revva does **not** spawn opencode per-session; it attaches to your shared service.
-- **Atlassian MCP over Streamable HTTP** — Revva's own onboarding/OAuth flow (device/PKCE via loopback), tokens in Electron `safeStorage`. Optional documented fallbacks only. Never reads another app's private token-cache file.
+- **Atlassian MCP v2 over Streamable HTTP** — Revva's own onboarding/OAuth flow (PKCE via loopback, endpoints discovered from Atlassian's resource metadata), tokens in Electron `safeStorage`. Optional documented fallbacks only. Never reads another app's private token-cache file.
 - **better-sqlite3** — revva's own state: tickets↔sessions↔branches map, review ledger, decision audit log, comment-watch watermarks, role defaults, settings.
 - **child_process** — feature-detected `git`, `gh`, and user scripts (`/bin/zsh -ic`), with in-app status/errors.
 
@@ -182,7 +182,9 @@ revva/
 | Permission prompts: `permission.asked` (fields directly on `data`) | SSE stream |
 | Worktree API exists; revva uses plain `git worktree add` for predictability | verified live |
 | Model selection per session: `session.create({model:{providerID,id}, location:{directory}})` | verified live |
-| Real MCP tool names: `searchJiraIssuesUsingJql`, `getJiraIssue`, `addCommentToJiraIssue`, `transitionJiraIssue`, `getTransitionsForJiraIssue`, `atlassianUserInfo`; all require `cloudId`; there is **no** list-comments tool (comments come from `getIssue` fields) | live `tools/list` |
+| Real MCP v2 tool names (`?tools=all`): `searchJiraIssuesUsingJql`, `getJiraIssue`, `addOrEditJiraIssueComment`, `transitionJiraIssue`, `listJiraIssueTransitions`, `atlassianUserInfo`; all require `cloudId`; comments come from `getIssue` fields, not `listJiraIssueComments` (paginated oldest-first) | live `tools/list` 2026-10-30 |
+| Atlassian MCP v2 is a separate OAuth resource from v1: auth server `auth.atlassian.com/<opaque>` discovered via `oauth-protected-resource/v2/mcp`; v1 tokens/client do not carry over; scopes are `*:jira:agent-interface` | live discovery probe 2026-10-30 |
+| v1 shuts off as v1 **2027-03-01**, when existing v1 connections start exposing v2 tools | [Atlassian upgrade doc](https://support.atlassian.com/atlassian-ai-gateway/docs/how-to-upgrade-from-atlassian-mcp-v1-to-atlassian-mcp-v2/) |
 | Original developer's `morning` zsh function calls `useaws.py` and starts a proxy | Local observation only; added as a user **Script** in Revva — Revva runs it and probes its local port, nothing AWS-specific in code |
 | Original developer has GPU, Bedrock, and Kimi providers configured | Local observation only; Revva discovers agents/models dynamically and makes none a requirement |
 | Original developer has `grill-me`, `test-audit`, `impeccable`, and `gh-stack` installed | Local observation only; Revva checks skills/extensions per installation |

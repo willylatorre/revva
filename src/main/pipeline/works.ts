@@ -60,6 +60,7 @@ interface WorkRow {
   state: string
   session_id: string | null
   review_sel: string | null
+  review_cycle_start: number | null
   ship_on_approve: number | null
   blocker: string | null
   pr_url: string | null
@@ -82,6 +83,20 @@ interface FollowUpRow {
 
 function slugBranch(key: string): string {
   return `revva/${key.toLowerCase()}`
+}
+
+/**
+ * Round progress for quick-glance UIs: the newest reviewer round as a 1-based
+ * position within the current cycle, plus the bounded maximum (reviewMaxRounds).
+ * Empty before any review round exists.
+ */
+function reviewCycle(r: WorkRow): { reviewRound?: number; reviewRoundsMax?: number } {
+  const latest = getDb()
+    .prepare("SELECT MAX(round) AS round FROM review WHERE work_id = ? AND role != 'fixer'")
+    .get(r.id) as { round: number | null } | undefined
+  if (!latest?.round) return {}
+  const maxRounds = Math.min(settingGet<number>('reviewMaxRounds') ?? 3, 5)
+  return { reviewRound: latest.round - (r.review_cycle_start ?? 1) + 1, reviewRoundsMax: maxRounds }
 }
 
 /** States where the last move came from the pipeline, not from you — these flag unread. */
@@ -138,7 +153,8 @@ class WorkManager {
       prUrl: r.pr_url ?? undefined,
       blocker: r.blocker ?? undefined,
       updatedAt: r.updated_at,
-      unread: (r.seen_at ?? 0) < r.updated_at && UNREAD_WORTHY_STATES.has(r.state)
+      unread: (r.seen_at ?? 0) < r.updated_at && UNREAD_WORTHY_STATES.has(r.state),
+      ...reviewCycle(r)
     }
   }
 
