@@ -7,6 +7,8 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
+- **Reopened conversations render completed answers faster** — finishing a reply and later switching back to that conversation used to re-parse every finished Markdown document from scratch. Parsed results for final documents and settled streamed blocks are now kept in a small renderer-memory cache (bounded by size, never written to disk), so returning to them skips the parse step; streaming itself is unchanged.
+
 - **Model pickers show each model once** — a provider that publishes the same model under several region variants (Bedrock's `global.…`/`us.…` listings) used to repeat it in the model lists. Duplicates are now collapsed by provider + model ID, which also silences the React duplicate-key console noise.
 
 - **A glance at what the agents are doing** — delegated agents now live in one place: a compact **Agents** card in the right rail under Stats. Each child carries a status pill and a live one-liner (“Running: bash · pnpm typecheck”, “Reasoning”…), and a row opens the full output dialog (transcript, direct follow-ups, nested delegations, stop). While a review runs the same card grows a cycle header — **round 2/3**, per-gate pills (queued / running / approved / changes / error / stopped) and “N/M gates approved”. The old agent strip under the conversation is gone. Every agent status shares one tag style on the theme's status colors (blue = running, green = approved, amber = needs you / changes, red = error), and a deliberate stop reads as “stopped” instead of a red failure.
