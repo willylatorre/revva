@@ -7,6 +7,10 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
+- (nothing yet)
+
+## [1.2.1] - 2026-10-30
+
 - **Reviewer failures say what failed** — a failing reviewer showed `[object Object]` instead of the error because the OpenCode service reports failures as structured objects (`{ type, message, status }`), which stringified to nothing useful. Revva now shows the message with its kind and HTTP status — e.g. "The security token included in the request is expired (provider.auth HTTP 401)" — wherever a session failure surfaces (review cards, retry, work blocker).
 
 - **Stale "check out a branch" refusal heals itself** — a conversation opened with *Chat with this PR* anchored its run before the PR worktree existed, so its row recorded no branch and review/shipping refused forever with "Choose the conversation's Git worktree and check out a branch" — with nothing left to pick. Opening the conversation (or its Details, or pressing Start reviews/Ship) now re-reads git once and adopts the branch actually checked out in that folder; the old refusal is gone and the review folder is re-anchored the same way. A checkout that *had* a branch and then drifted is deliberately left alone — that still requires an explicit re-select, so review can never silently switch what it audits.
