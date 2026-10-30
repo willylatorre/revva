@@ -52,12 +52,22 @@ type View =
   | { kind: 'scripts' }
   | { kind: 'github' }
 
-const serviceStateLabels = {
-  connecting: { label: 'Connecting…', cls: 'text-muted-foreground' },
-  connected: { label: 'Connected', cls: 'text-emerald-600 dark:text-emerald-400' },
-  missing: { label: 'OpenCode not found', cls: 'text-destructive' },
-  error: { label: 'Service error', cls: 'text-destructive' }
-} as const
+/** Sidebar title badge: what build this is and when the main process spun up. */
+function buildBadgeLabel(meta: { version: string; dev: boolean }): string {
+  return `v${meta.version}${meta.dev ? ' · dev' : ''}`
+}
+
+function buildBadgeTooltip(meta: { version: string; dev: boolean; startedAt: number }): string {
+  const mins = Math.max(0, Math.floor((Date.now() - meta.startedAt) / 60_000))
+  const up = mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h ${mins % 60}m`
+  const spunUp = new Date(meta.startedAt).toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+  return `${meta.dev ? 'Dev build (pnpm dev)' : `Installed release v${meta.version}`} — spun up ${spunUp} · up ${up}`
+}
 
 type SessionActivity = 'Thinking' | 'Needs you' | 'Ready' | 'Checking…' | 'Unavailable'
 
@@ -78,6 +88,8 @@ export default function App(): React.JSX.Element {
     refetchInterval: 60_000
   })
   const chats = useQuery({ queryKey: ['chats'], queryFn: () => window.revva.chat.list() })
+  // Title badge: version, dev-vs-installed, and when this main process started.
+  const appMeta = useQuery({ queryKey: ['app-meta'], queryFn: () => window.revva.app.meta(), staleTime: Infinity })
   const works = useQuery({ queryKey: ['works'], queryFn: () => window.revva.work.list() })
   // The cleanup list includes linked worktrees in known repos, not main checkouts.
   const worktrees = useQuery({
@@ -139,7 +151,6 @@ export default function App(): React.JSX.Element {
   }, [qc])
 
   const st = status.data
-  const stateInfo = serviceStateLabels[st?.state ?? 'connecting']
   const activeWork =
     view.kind === 'work' ? works.data?.find((w) => w.id === view.workId)
       : view.kind === 'chat' ? works.data?.find((w) => w.sessionId === view.sessionId && w.state !== 'ABANDONED') : undefined
@@ -349,7 +360,20 @@ export default function App(): React.JSX.Element {
     <div className="flex h-screen overflow-hidden">
       <aside className="flex w-60 shrink-0 flex-col border-r bg-sidebar text-sidebar-foreground">
         <div className="drag-region flex h-11 items-center px-3 pl-20">
-          <span className="text-[13px] font-semibold tracking-wide">revva</span>
+          {/* Wordmark and version share one baseline so the pair reads as a lockup. */}
+          <span className="flex items-baseline gap-2">
+            <span className="select-none font-display text-[15px] font-semibold leading-none tracking-tight">revva</span>
+            {appMeta.data && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className={cn('no-drag select-none text-[10px] leading-none tabular-nums', appMeta.data.dev ? 'font-medium text-amber-600 dark:text-amber-400' : 'text-muted-foreground')}>
+                    {buildBadgeLabel(appMeta.data)}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>{buildBadgeTooltip(appMeta.data)}</TooltipContent>
+              </Tooltip>
+            )}
+          </span>
         </div>
 
         <div className="space-y-0.5 px-2">
@@ -586,21 +610,6 @@ export default function App(): React.JSX.Element {
               <InboxIcon className="size-3.5" />
               {waitingCount > 0 ? `${waitingCount} waiting on you` : 'Inbox clear'}
             </button>
-            {st?.state === 'connected' ? (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="no-drag flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] text-muted-foreground">
-                    <span className="size-1.5 rounded-full bg-emerald-500" />
-                    opencode v{st.version}
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent>{st.url}</TooltipContent>
-              </Tooltip>
-            ) : (
-              <Badge variant="outline" className={cn('no-drag font-normal', stateInfo.cls)}>
-                {stateInfo.label}
-              </Badge>
-            )}
           </div>
         </div>
         {view.kind === 'setup' ? (

@@ -226,7 +226,14 @@ export function registerIpc(): void {
     } catch {
       /* dev mode from a source tree without one — renderer shows a fallback */
     }
-    return { version: app.getVersion(), changelog }
+    // startedAt lets the renderer tell a freshly spun-up instance from a stale
+    // long-running window; process.uptime() is the main process's own clock.
+    return {
+      version: app.getVersion(),
+      changelog,
+      dev: !app.isPackaged,
+      startedAt: Math.round(Date.now() - process.uptime() * 1000)
+    }
   })
 
   /* ---------- chats ---------- */

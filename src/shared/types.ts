@@ -951,8 +951,8 @@ export interface RevvaApi {
     openExternal(url: string): Promise<void>
   }
   app: {
-    /** App version + bundled CHANGELOG.md text. */
-    meta(): Promise<{ version: string; changelog: string }>
+    /** App version + bundled CHANGELOG.md text; dev = unpackaged build, startedAt = when this main process spun up. */
+    meta(): Promise<{ version: string; changelog: string; dev: boolean; startedAt: number }>
   }
   chat: {
     list(): Promise<ChatSummary[]>
