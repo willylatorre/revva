@@ -8,6 +8,17 @@ A local Electron desktop app that turns your Jira sprint into shipped, reviewed 
   <img src="docs/images/dashboard.png" alt="Revva dashboard: OpenCode health, Jira sprint progress, inbox, pipeline work, PRs and scripts at a glance" width="860">
 </p>
 
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/inbox.png" alt="Triage inbox: a finished run ready to answer inline, thinking meter counting what agents are working on"></td>
+    <td width="50%"><img src="docs/images/cockpit.png" alt="Ticket cockpit: live streaming transcript with grouped tool steps, model switcher and PR menu"></td>
+  </tr>
+  <tr>
+    <td><b>Triage inbox</b> — long agent runs land as cards: questions, permissions, finished work. Answer inline, move on.</td>
+    <td><b>Review loop, mid-flight</b> — every build fans out parallel cross-model reviewers into one fixer; you approve, you merge.</td>
+  </tr>
+</table>
+
 ```
 Jira sprint board ──▶ pick tickets ──▶ worktree + branch per ticket
         │                                    │
