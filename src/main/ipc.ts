@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import { IPC, settingsKeySchema, chatCreateInputSchema, modelRefSchema, type Workspace } from '@shared/types'
 import { keepAwake } from './keep-awake'
+import { detectDictationApps } from './dictation'
 import { openCodeService } from './opencode/service'
 import { chatManager } from './opencode/chats'
 import { agentSessions } from './opencode/agent-sessions'
@@ -24,7 +25,9 @@ import { triageManager } from './opencode/triage'
 import { listAgents, listModels, listSkills } from './opencode/inventory'
 import { jiraAuth } from './jira/auth'
 import { jiraMcp } from './jira/mcp'
-import { fetchBoard, fetchTicketDetail } from './jira/board'
+import { jiraBridge } from './jira/bridge'
+import { findDuplicateAtlassianConfigs } from './jira/harness-config'
+import { fetchBoard, fetchTicketDetail, markReadyForTest } from './jira/board'
 import { commentWatcher } from './jira/watch'
 import { workManager } from './pipeline/works'
 import { worktreeManager } from './worktrees'
@@ -163,6 +166,7 @@ export function registerIpc(): void {
   /* ---------- keep awake (caffeinate equivalent) ---------- */
   ipcMain.handle(IPC.keepAwakeGet, () => keepAwake.enabled)
   ipcMain.handle(IPC.keepAwakeSet, (_e, enabled: unknown) => keepAwake.set(enabled === true))
+  ipcMain.handle(IPC.dictationDetect, () => detectDictationApps())
 
   /* ---------- workspaces (folders revva may target) ---------- */
   ipcMain.handle(IPC.workspaceList, () => {
@@ -331,7 +335,9 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.jiraStatus, () => ({
     ...jiraAuth.status(),
     mcpConnected: jiraMcp.connected,
-    capabilities: jiraMcp.connected ? jiraMcp.capabilities() : undefined
+    capabilities: jiraMcp.connected ? jiraMcp.capabilities() : undefined,
+    sharedCheckouts: jiraBridge.registeredCount,
+    duplicateConfigs: findDuplicateAtlassianConfigs((getDb().prepare('SELECT path FROM workspace').all() as Array<{ path: string }>).map((r) => r.path))
   }))
   ipcMain.handle(IPC.jiraConnect, async () => {
     await jiraAuth.connect()
@@ -351,6 +357,28 @@ export function registerIpc(): void {
   })
   ipcMain.handle(IPC.boardFetch, () => fetchBoard())
   ipcMain.handle(IPC.jiraDetail, (_e, key: string) => fetchTicketDetail(String(key)))
+  // Manual-only ticket move, and the only one to Ready to Test. A linked PR that is still
+  // open means the work is not mergeable-done yet, so the user confirms that explicitly.
+  ipcMain.handle(IPC.jiraReadyToTest, async (_e, key: unknown, confirmed: unknown) => {
+    const ticketKey = String(key)
+    if (confirmed !== true) {
+      const links = getDb()
+        .prepare("SELECT pr_url FROM work WHERE ticket_key = ? AND pr_url IS NOT NULL AND state != 'ABANDONED'")
+        .all(ticketKey) as Array<{ pr_url: string }>
+      for (const { pr_url } of links) {
+        try {
+          const pr = await githubManager.detail(pr_url)
+          if (!/merged/i.test(pr.state)) return { moved: false as const, unmergedPrUrl: pr_url }
+        } catch {
+          // Unreadable PR: fall through and let the move happen — the board must not
+          // become unusable because gh had a bad minute. The failure is on the log.
+          console.warn(`[jira] could not verify merge state of ${pr_url} for ${ticketKey}`)
+        }
+      }
+    }
+    const status = await markReadyForTest(ticketKey)
+    return { moved: true as const, status }
+  })
 
   /* ---------- works (ticket pipeline) ---------- */
   ipcMain.handle(IPC.workStart, (_e, input: unknown) => workManager.start(startWorkInputSchema.parse(input)))
@@ -415,8 +443,8 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.commentsTackle, (_e, workId: string) => commentWatcher.tackleComments(String(workId)))
 
   /* ---------- github + task sessions + favorites ---------- */
-  ipcMain.handle(IPC.githubList, (_e, scope?: unknown) =>
-    githubManager.list(scope === 'review' ? 'review' : 'mine')
+  ipcMain.handle(IPC.githubList, (_e, scope?: unknown, force?: unknown) =>
+    githubManager.list(scope === 'review' ? 'review' : 'mine', force === true)
   )
   ipcMain.handle(IPC.githubReview, (_e, ref: string) => {
     const parsed = parsePrRef(String(ref))

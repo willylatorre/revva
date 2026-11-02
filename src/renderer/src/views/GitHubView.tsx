@@ -59,6 +59,24 @@ export function useGithubAlerts(): PrAlert[] {
   return q.data ?? []
 }
 
+/** PR board data for one scope: main answers instantly from its polled snapshot
+ *  and pushes every background refresh, so no refetch interval is needed here. */
+export function useGithubPrs(scope: 'mine' | 'review') {
+  const qc = useQueryClient()
+  const q = useQuery({
+    queryKey: ['gh-prs', scope],
+    queryFn: () => window.revva.github.list(scope),
+    staleTime: 30_000,
+    refetchOnWindowFocus: false
+  })
+  useEffect(() => {
+    return window.revva.events.on((e) => {
+      if (e.kind === 'github.prs' && e.scope === scope) qc.setQueryData(['gh-prs', scope], e.items)
+    })
+  }, [qc, scope])
+  return q
+}
+
 /**
  * GitHub tab: open PRs (authored / review-requested) via the user's `gh` CLI.
  * "Review" spins up a read-only review session on a checked-out PR worktree.
@@ -72,13 +90,7 @@ export function GitHubView({
   const [scope, setScope] = useState<'mine' | 'review'>('mine')
   const [busyUrl, setBusyUrl] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
-  const prs = useQuery({
-    queryKey: ['gh-prs', scope],
-    queryFn: () => window.revva.github.list(scope),
-    staleTime: 30_000,
-    // Background freshness: conflicts/approvals/comments land without a manual refresh.
-    refetchInterval: 90_000
-  })
+  const prs = useGithubPrs(scope)
   const review = useMutation({
     mutationFn: (prUrl: string) => window.revva.github.review(prUrl),
     onSuccess: (res) => {
@@ -207,7 +219,14 @@ export function GitHubView({
                 Mark all read
               </Button>
             )}
-            <Button size="sm" variant="outline" disabled={prs.isFetching} onClick={() => prs.refetch()}>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={prs.isFetching}
+              onClick={() =>
+                void qc.fetchQuery({ queryKey: ['gh-prs', scope], queryFn: () => window.revva.github.list(scope, true) })
+              }
+            >
               <RefreshCw className={cn('size-4', prs.isFetching && 'animate-spin')} />
             </Button>
           </div>

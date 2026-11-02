@@ -273,3 +273,28 @@ function linksFromRaw(raw: string): JiraLink[] {
     return []
   }
 }
+
+/** What "Ready to Test" is called on this site ("Ready for Test", "Ready for QA", …). */
+export const READY_TO_TEST_STATUS = /ready\s*-?\s*(?:to\s+|for\s+)?(?:test|qa|testing)/i
+
+/**
+ * Manual-only move to the site's Ready-to-Test status. Ship and agents never transition
+ * tickets — an open PR is not proof the work is testable — so this button (behind an IPC
+ * call, with an unmerged-PR confirmation in ipc.ts) is the only path there in Revva.
+ * Returns the status name Jira moved to; throws with the site's options when none fits.
+ */
+export async function markReadyForTest(key: string): Promise<string> {
+  if (!jiraMcp.connected) await jiraMcp.connect()
+  const raw = (await jiraMcp.listTransitions(key)) as { transitions?: Array<{ id: string; name: string; to?: { name?: string } }> }
+  const options = raw?.transitions ?? []
+  const nameOf = (t: { name: string; to?: { name?: string } }): string => t.to?.name ?? t.name ?? ''
+  const pick = options.find((t) => READY_TO_TEST_STATUS.test(nameOf(t)))
+  if (!pick) {
+    throw new Error(`No Ready-to-Test transition is available for ${key} (options: ${options.map((t) => nameOf(t)).join(', ') || 'none'}).`)
+  }
+  await jiraMcp.transitionIssue(key, pick.id)
+  const status = nameOf(pick)
+  // Keep the local cache honest so cards show the new status without a full board refetch.
+  getDb().prepare('UPDATE ticket SET status = ?, synced_at = ? WHERE key = ?').run(status, Date.now(), key)
+  return status
+}

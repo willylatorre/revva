@@ -17,6 +17,7 @@ import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import { useTriage } from '@/views/InboxView'
+import { useGithubPrs } from '@/views/GitHubView'
 import type { WorkSummary } from '@shared/types'
 
 type Section = 'inbox' | 'jira' | 'github' | 'scripts' | 'setup'
@@ -47,8 +48,8 @@ export function DashboardView({
   })
   const inbox = useQuery({ queryKey: ['inbox'], queryFn: () => window.revva.inbox.list() })
   const triage = useTriage()
-  const prsMine = useQuery({ queryKey: ['gh-prs', 'mine'], queryFn: () => window.revva.github.list('mine'), staleTime: 30_000 })
-  const prsReview = useQuery({ queryKey: ['gh-prs', 'review'], queryFn: () => window.revva.github.list('review'), staleTime: 30_000 })
+  const prsMine = useGithubPrs('mine')
+  const prsReview = useGithubPrs('review')
   const chats = useQuery({ queryKey: ['chats'], queryFn: () => window.revva.chat.list() })
   const scripts = useQuery({ queryKey: ['scripts'], queryFn: () => window.revva.scripts.list() })
   const scriptStatus = useQuery({ queryKey: ['script-status'], queryFn: () => window.revva.scripts.status() })

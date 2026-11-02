@@ -16,6 +16,7 @@ import { collaborationTransport } from './collaboration-transport'
 import { eventBus } from './bus'
 import { reviewTranscriptContext, reviewTranscriptInstructions } from './review-context'
 import { checkoutTopLevel } from '../branches'
+import { jiraBridge } from '../jira/bridge'
 
 const idSchema = z.string().min(1).max(500)
 const textSchema = z.string().trim().min(1).max(32_000)
@@ -186,6 +187,8 @@ class Coordinator {
       const status = await openCodeService.api.mcp.list({ location: { directory } })
       const server = status.data.find((server) => server.name === this.name)
       if (server?.status.status !== 'connected') throw new Error('OpenCode could not connect the Revva collaboration tools.')
+      // Share Revva's single Atlassian sign-in with this checkout's harness tools.
+      jiraBridge.ensureCheckout(directory)
     })()
     const entry = { ready, close: () => close() }
     this.connections.set(directory, entry)

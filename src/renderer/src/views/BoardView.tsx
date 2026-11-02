@@ -1,8 +1,10 @@
 import { useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { toast } from 'sonner'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
+  BadgeCheck,
   ChevronDown,
   Clock4,
   CornerDownRight,
@@ -46,6 +48,51 @@ import type { Ticket, WorkSummary } from '@shared/types'
 import { StartWorkDialog } from './StartWorkDialog'
 
 const ALL_STATUSES = '__all__'
+
+/** Statuses this site already spells "Ready to Test" — no point offering the move again. */
+const READY_TO_TEST_STATUS = /ready\s*-?\s*(?:to\s+|for\s+)?(?:test|qa|testing)/i
+
+/**
+ * The manual move to Ready to Test. Revva itself never transitions tickets: shipping only
+ * comments on the ticket, because an open PR does not prove the work is testable. The main
+ * process additionally refuses while a linked PR is unmerged, and this hook asks the one
+ * confirmation question when it does.
+ */
+function useReadyToTest(): {
+  busyKey: string | null
+  moveTicket: (key: string) => void
+} {
+  const qc = useQueryClient()
+  const [busyKey, setBusyKey] = useState<string | null>(null)
+  const move = useMutation({
+    mutationFn: (input: { key: string; confirmed?: boolean }) => window.revva.jira.readyToTest(input.key, input.confirmed),
+    onSuccess: (res, input) => {
+      if (!res.moved) {
+        const go = confirm(
+          `${input.key} still has an unmerged PR:\n${res.unmergedPrUrl}\n\nMove it to Ready to Test anyway? The usual answer is no — merge first.`
+        )
+        if (go) move.mutate({ key: input.key, confirmed: true })
+        else setBusyKey(null)
+        return
+      }
+      toast.success(`${input.key} → ${res.status}`)
+      qc.invalidateQueries({ queryKey: ['board'] })
+      qc.invalidateQueries({ queryKey: ['ticket-detail', input.key] })
+      setBusyKey(null)
+    },
+    onError: (err, input) => {
+      toast.error(`${input.key}: ${err.message}`)
+      setBusyKey(null)
+    }
+  })
+  return {
+    busyKey: move.isPending ? busyKey : null,
+    moveTicket: (key: string) => {
+      setBusyKey(key)
+      move.mutate({ key })
+    }
+  }
+}
 
 /**
  * Board: current-sprint assigned tickets with dependency hints, status filter,
@@ -96,6 +143,7 @@ export function BoardView({
       onOpenChat(res.sessionId)
     }
   })
+  const ready = useReadyToTest()
 
   const activeByTicket = new Map(
     works
@@ -207,6 +255,8 @@ export function BoardView({
             boardData={board.data ?? []}
             activeByTicket={activeByTicket}
             sessionBusy={sessionBusy}
+            readyBusyKey={ready.busyKey}
+            onReadyToTest={ready.moveTicket}
             onSession={(key) => {
               setSessionBusy(key)
               openSession.mutate(key, { onSettled: () => setSessionBusy(null) })
@@ -260,6 +310,8 @@ function TicketBoard({
   boardData,
   activeByTicket,
   sessionBusy,
+  readyBusyKey,
+  onReadyToTest,
   onSession,
   onStartTicket,
   onStartWork,
@@ -269,6 +321,9 @@ function TicketBoard({
   boardData: Ticket[]
   activeByTicket: Map<string, WorkSummary>
   sessionBusy: string | null
+  /** Ticket key whose Ready-to-Test move is in flight. */
+  readyBusyKey: string | null
+  onReadyToTest: (key: string) => void
   onSession: (key: string) => void
   onStartTicket: (t: Ticket) => void
   onStartWork: (workId: string) => void
@@ -332,6 +387,8 @@ function TicketBoard({
         boardData={boardData}
         active={activeByTicket.get(t.key)}
         sessionBusy={sessionBusy === t.key}
+        readyBusy={readyBusyKey === t.key}
+        onReadyToTest={() => onReadyToTest(t.key)}
         zone={zone}
         chainKey={chain}
         chainHighlighted={!!chain && (chains.size.get(chain) ?? 0) > 1 && hoveredChain === chain}
@@ -408,6 +465,8 @@ function TicketCard({
   boardData,
   active,
   sessionBusy,
+  readyBusy,
+  onReadyToTest,
   zone,
   chainKey,
   chainHighlighted,
@@ -433,6 +492,9 @@ function TicketCard({
   onJumpToParent?: () => void
   active: WorkSummary | undefined
   sessionBusy: boolean
+  /** Ready-to-Test move for this ticket is in flight. */
+  readyBusy: boolean
+  onReadyToTest: () => void
   zone: 'important' | 'main' | 'later'
   onSession: () => void
   onStartTicket: () => void
@@ -601,6 +663,23 @@ function TicketCard({
             </TooltipTrigger>
             <TooltipContent>{zone === 'later' ? 'Back to the list' : 'Not right now'}</TooltipContent>
           </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="xs"
+                variant="ghost"
+                className="h-6 px-1.5 text-muted-foreground hover:text-emerald-600 dark:hover:text-emerald-400"
+                title="Move to Ready to Test"
+                disabled={readyBusy}
+                onClick={onReadyToTest}
+              >
+                {readyBusy ? <Loader2 className="size-3.5 animate-spin" /> : <BadgeCheck className="size-3.5" />}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              Move to Ready to Test{READY_TO_TEST_STATUS.test(t.status) ? ' (already there)' : ' — do this after the PR merges'}
+            </TooltipContent>
+          </Tooltip>
           {t.url && (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -651,6 +730,7 @@ function TicketDetailsDialog({
     // a cached (possibly empty) answer must not shadow the truth.
     staleTime: 0
   })
+  const ready = useReadyToTest()
   // Open work first, done at the bottom — a long list opens with what you can start.
   const items = useMemo(() => {
     const list = detail.data?.subtasks ?? []
@@ -682,6 +762,19 @@ function TicketDetailsDialog({
             <Badge variant="outline" className={cn('text-[10px]', jiraStatusClasses(ticket.status, ticket.statusCategory))}>
               {ticket.status}
             </Badge>
+            {!READY_TO_TEST_STATUS.test(detail.data?.ticket.status ?? ticket.status) && (
+              <Button
+                size="xs"
+                variant="outline"
+                className="gap-1 text-[11px] text-emerald-700 hover:text-emerald-800 dark:text-emerald-400"
+                disabled={ready.busyKey === ticket.key}
+                title="Do this once the linked PR is merged — revva never moves the ticket itself"
+                onClick={() => ready.moveTicket(ticket.key)}
+              >
+                {ready.busyKey === ticket.key ? <Loader2 className="size-3 animate-spin" /> : <BadgeCheck className="size-3" />}
+                Ready to Test
+              </Button>
+            )}
           </DialogTitle>
           <DialogDescription>{ticket.summary}</DialogDescription>
         </DialogHeader>

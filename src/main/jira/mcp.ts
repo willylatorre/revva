@@ -10,6 +10,9 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { jiraAuth, MCP_URL } from './auth'
+
+/** The raw `tools/call` result envelope, passed through to the agent-facing bridge untouched. */
+export type RawToolResult = { content?: unknown[]; isError?: boolean; structuredContent?: unknown }
 /** One Atlassian site from `getAccessibleAtlassianResources`. */
 type AccessibleSite = { id?: string; cloudId?: string; url?: string; products?: Array<{ id?: string }> }
 
@@ -82,12 +85,42 @@ export class JiraMcp {
   private capMap = new Map<JiraCapability, string>()
   private cloudId: string | undefined
   private cachedAccountId: string | null | undefined
+  private connecting: Promise<void> | undefined
+  private inventoryListeners = new Set<() => void>()
 
   get connected(): boolean {
     return !!this.client
   }
 
-  async connect(): Promise<void> {
+  /** Inventory grew (connect) or emptied (sign-out); the agent-facing bridge re-registers on this. */
+  onInventoryChange(fn: () => void): () => void {
+    this.inventoryListeners.add(fn)
+    return () => this.inventoryListeners.delete(fn)
+  }
+
+  private emitInventoryChange(): void {
+    for (const fn of this.inventoryListeners) {
+      try {
+        fn()
+      } catch {
+        /* a listener failure must not break the connection */
+      }
+    }
+  }
+
+  connect(): Promise<void> {
+    // Single-flight: board, watcher, ship and the bridge all ensure connectivity concurrently.
+    this.connecting ??= (async () => {
+      try {
+        await this.connectOnce()
+      } finally {
+        this.connecting = undefined
+      }
+    })()
+    return this.connecting
+  }
+
+  private async connectOnce(): Promise<void> {
     const token = await jiraAuth.accessToken()
     const transport = new StreamableHTTPClientTransport(new URL(MCP_URL), {
       requestInit: { headers: { Authorization: `Bearer ${token}` } }
@@ -125,6 +158,7 @@ export class JiraMcp {
     } catch {
       /* ignore */
     }
+    this.emitInventoryChange()
   }
 
   async disconnect(): Promise<void> {
@@ -133,6 +167,9 @@ export class JiraMcp {
     this.capMap.clear()
     this.cloudId = undefined
     this.siteUrl = undefined
+    // An explicit sign-out unshares the tool surface too: agents see the inventory
+    // disappear once the bridge re-registers (a dropped stream keeps it for lazy reconnect).
+    this.tools = []
   }
 
   /** Re-auth + reconnect (token rotated or stream died). */
@@ -210,6 +247,37 @@ export class JiraMcp {
         await this.reconnect()
         const res = await this.client!.callTool({ name: this.tool(cap), arguments: this.argsFor(cap, args) })
         return parseToolResult(res) as T
+      } catch (err2) {
+        throw err2 instanceof Error && err2.message.includes('not connected') ? err : err2
+      }
+    }
+  }
+
+  /**
+   * Calls any discovered Atlassian tool by its Atlassian name, arguments passed through
+   * verbatim (the agent-facing bridge forwards what the model sent against Atlassian's
+   * own schema). The raw result envelope goes back unmodified — including v2's `{ data }`
+   * wrapper — so agents see exactly what a direct Atlassian MCP connection returns.
+   * One transparent retry after reconnect covers token rotation and dropped streams.
+   */
+  async callRaw(name: string, args: Record<string, unknown>): Promise<RawToolResult> {
+    if (!this.tools.some((tool) => tool.name === name)) {
+      throw new Error(`Atlassian MCP does not expose "${name}" on this connection.`)
+    }
+    const run = async (): Promise<RawToolResult> => {
+      if (!this.client) throw new Error('Jira not connected.')
+      return this.client.callTool({ name, arguments: args }) as Promise<RawToolResult>
+    }
+    try {
+      return await run()
+    } catch (err) {
+      await this.reconnect().catch(() => undefined)
+      // The retry must hit the *same* server the tool was discovered from: after a
+      // sign-out, this.client is a different Atlassian connection and this name may
+      // not exist there (or worse, mean something else).
+      if (!this.client || !this.tools.some((tool) => tool.name === name)) throw err
+      try {
+        return await run()
       } catch (err2) {
         throw err2 instanceof Error && err2.message.includes('not connected') ? err : err2
       }

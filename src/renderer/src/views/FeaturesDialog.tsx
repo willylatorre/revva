@@ -53,7 +53,7 @@ const FEATURES: Array<{ title: string; body: string }> = [
   },
   {
     title: 'Ship',
-    body: 'Pre-flight checks, push (never force), gh pr create with review-gate summary, opens the PR, transitions Jira + summary comment. Never merges.'
+    body: 'Pre-flight checks, push (never force), gh pr create with review-gate summary, opens the PR, posts a Jira summary comment — never a status change (Ready to Test is a board button after merge). Never merges.'
   },
   {
     title: 'AUTO mode',

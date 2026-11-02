@@ -13,6 +13,7 @@ import { reviewManager } from './review'
 import { scriptManager } from './scripts'
 import { jiraAuth } from './jira/auth'
 import { jiraMcp } from './jira/mcp'
+import { jiraBridge } from './jira/bridge'
 import { commentWatcher } from './jira/watch'
 import { sessionIndex } from './opencode/session-index'
 import { agentSessions } from './opencode/agent-sessions'
@@ -74,6 +75,7 @@ app.whenReady().then(() => {
   agentSessions.wire()
   agentActivityMeter.wire()
   coordinator.wire()
+  jiraBridge.wire()
   chatManager.wire()
   throughputMeter.wire()
   wireSessionMetrics()
@@ -108,5 +110,7 @@ app.on('before-quit', (event) => {
   eventBus.stop()
   openCodeService.dispose()
   // Running scripts (e.g. a user's proxy) are intentionally left alive.
-  void coordinator.dispose().finally(() => app.quit())
+  // By design nothing ever calls mcp.remove, so the harness keeps the user's own config;
+  // the bridge's mounts die with the collaboration transport inside coordinator.dispose().
+  void jiraBridge.dispose().finally(() => coordinator.dispose()).finally(() => app.quit())
 })

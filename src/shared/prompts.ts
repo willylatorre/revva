@@ -52,7 +52,8 @@ export const PROMPT_PLACEHOLDER_HELP =
 /** Always appended to ticket-seeded prompts: the repo's own workflow skills gate on plugins Revva cannot enable. */
 export const WORKFLOW_SKILL_GUARD = `Revva workflow guard:
 - Work from this prompt directly. Do not run the repository's ticket or review workflow skills or slash commands (e.g. /jiraWork, /reviewPR) — Revva orchestrates those steps itself.
-- Never stop because such a skill or an optional plugin (e.g. superpowers) is missing or not enabled; treat that as irrelevant. A missing skill or plugin is only a blocker if the ticket's actual implementation needs it.`
+- Never stop because such a skill or an optional plugin (e.g. superpowers) is missing or not enabled; treat that as irrelevant. A missing skill or plugin is only a blocker if the ticket's actual implementation needs it.
+- Never transition the Jira ticket to "Ready to Test" (or any later status like Ready to Merge, Verified, Done) — that is a manual step the team takes after the PR merges. Only the human in this conversation may ask you to, and only after they confirm the merge.`
 
 /** Always appended, including when the user customized the start template. */
 export const BUILD_COMPLETION_INSTRUCTIONS = `${WORKFLOW_SKILL_GUARD}

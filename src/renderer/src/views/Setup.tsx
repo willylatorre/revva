@@ -487,8 +487,27 @@ function JiraSection(): React.JSX.Element {
         </div>
       )}
       {error && <p className="text-xs text-destructive">{error}</p>}
+      {connected && (
+        <p className="text-xs text-muted-foreground">
+          {jira.data?.sharedCheckouts
+            ? `Shared with your OpenCode agents in ${jira.data.sharedCheckouts} ${jira.data.sharedCheckouts === 1 ? 'checkout' : 'checkouts'} — one sign-in, one permission surface.`
+            : 'Once a conversation is open, your agents use this same sign-in instead of signing in to Atlassian again.'}
+        </p>
+      )}
+      {!!jira.data?.duplicateConfigs?.length && (
+        <p className="text-xs text-amber-600 dark:text-amber-500">
+          Your OpenCode config still declares a second Atlassian server in{' '}
+          {jira.data.duplicateConfigs.map((file, i) => (
+            <span key={file} className="font-mono text-[10px]">
+              {i > 0 && ', '}
+              {file}
+            </span>
+          ))}
+          . Revva&rsquo;s connection takes over in every workspace it opens, but that entry keeps a separate sign-in of its own — remove it to keep one permission.
+        </p>
+      )}
       <p className="text-xs text-muted-foreground">
-        Revva registers its own OAuth client and stores tokens in the OS keychain (macOS Keychain / Windows Credential API, encrypted), never reading other apps' credential caches.
+        Revva registers its own OAuth client and stores tokens in the OS keychain (macOS Keychain / Windows Credential API, encrypted), never reading other apps&rsquo; credential caches.
       </p>
     </div>
   )

@@ -24,6 +24,9 @@ const api: RevvaApi = {
     get: () => ipcRenderer.invoke(IPC.keepAwakeGet),
     set: (enabled) => ipcRenderer.invoke(IPC.keepAwakeSet, enabled)
   },
+  dictation: {
+    detect: () => ipcRenderer.invoke(IPC.dictationDetect)
+  },
   workspace: {
     list: () => ipcRenderer.invoke(IPC.workspaceList),
     repositories: (id) => ipcRenderer.invoke(IPC.workspaceRepositories, id),
@@ -80,7 +83,8 @@ const api: RevvaApi = {
     reconnect: () => ipcRenderer.invoke(IPC.jiraReconnect),
     disconnect: () => ipcRenderer.invoke(IPC.jiraDisconnect),
     board: () => ipcRenderer.invoke(IPC.boardFetch),
-    detail: (key) => ipcRenderer.invoke(IPC.jiraDetail, key)
+    detail: (key) => ipcRenderer.invoke(IPC.jiraDetail, key),
+    readyToTest: (key, confirmed) => ipcRenderer.invoke(IPC.jiraReadyToTest, key, confirmed)
   },
   work: {
     start: (input) => ipcRenderer.invoke(IPC.workStart, input),
@@ -114,7 +118,7 @@ const api: RevvaApi = {
     tackle: (workId) => ipcRenderer.invoke(IPC.commentsTackle, workId)
   },
   github: {
-    list: (scope) => ipcRenderer.invoke(IPC.githubList, scope),
+    list: (scope, force) => ipcRenderer.invoke(IPC.githubList, scope, force),
     review: (prUrl) => ipcRenderer.invoke(IPC.githubReview, prUrl),
     chat: (prUrl) => ipcRenderer.invoke(IPC.githubChat, prUrl),
     solveConflicts: (prUrl) => ipcRenderer.invoke(IPC.githubSolveConflicts, prUrl),

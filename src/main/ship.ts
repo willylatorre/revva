@@ -1,8 +1,10 @@
 /**
- * M5 ship: commit-tree checks → push → PR via gh (open in browser) → Jira transition + summary.
+ * M5 ship: commit-tree checks → push → PR via gh (open in browser) → Jira summary comment.
  * Stacked work targets the parent work's branch as PR base, which is what gh-stack expects.
  * Never merges, never force-pushes. AUTO mode ships right after all gates approve;
  * interactive mode waits for the Ship button. Every choice is written to auto_decision.
+ * Jira: shipping never changes a ticket's status. An open PR says nothing about testability,
+ * so the status move is the user's call — the board has a Ready to Test button for it.
  */
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -146,7 +148,7 @@ class ShipManager {
       name: 'Jira sync',
       ok: jiraOk,
       fatal: false,
-      detail: !work.ticket_key ? 'no Jira link — not needed' : jiraOk ? 'status transition + summary comment after PR' : 'not connected — PR will be created without Jira updates'
+      detail: !work.ticket_key ? 'no Jira link — not needed' : jiraOk ? 'summary comment after PR; status never changes (Ready to Test is a board button)' : 'not connected — PR will be created without Jira updates'
     })
     return checks
   }
@@ -219,7 +221,7 @@ class ShipManager {
       getDb().prepare('UPDATE work SET pr_url = ?, updated_at = ? WHERE id = ?').run(prUrl, Date.now(), workId)
       void shell.openExternal(prUrl)
 
-      // 3. Jira: transition to review-ish status + summary comment. Best effort.
+      // 3. Jira: summary comment only — never a status change. Best effort.
       const jira = await this.syncJira(work, prUrl, reviews)
       audit(workId, 'jira-sync', jira)
 
@@ -303,7 +305,9 @@ class ShipManager {
     )
   }
 
-  /** Transition to a review-ish status and drop the PR summary comment; never throws. */
+  /** Drop the PR summary comment on the ticket; never throws, never touches status.
+   *  Status is the user's call: an open PR is not proof the work is testable, so the
+   *  move to Ready to Test happens only from the board's button (after the merge). */
   private async syncJira(
     work: ShipWorkRow,
     prUrl: string,
@@ -311,22 +315,7 @@ class ShipManager {
   ): Promise<string> {
     if (!work.ticket_key) return 'skipped: no Jira ticket linked'
     if (!jiraMcp.connected) return 'skipped: Jira not connected'
-    const notes: string[] = []
-    try {
-      const raw = (await jiraMcp.listTransitions(work.ticket_key)) as { transitions?: Array<{ id: string; name: string; to?: { name?: string } }> }
-      const options = raw?.transitions ?? []
-      const pick =
-        options.find((t) => /in review|review/i.test(t.to?.name ?? t.name ?? '')) ??
-        options.find((t) => /ready.*(test|qa)|testing/i.test(t.to?.name ?? t.name ?? ''))
-      if (pick) {
-        await jiraMcp.transitionIssue(work.ticket_key, pick.id)
-        notes.push(`transitioned to "${pick.to?.name ?? pick.name}"`)
-      } else {
-        notes.push(`no review-ish transition available (${options.map((t) => t.name).join(', ') || 'none'})`)
-      }
-    } catch (err) {
-      notes.push(`transition failed: ${err instanceof Error ? err.message : String(err)}`)
-    }
+    const notes: string[] = ['status untouched (Ready to Test moves from the board)']
     try {
       const byRole = new Map<string, string>()
       for (const r of reviews) byRole.set(r.role, r.status)

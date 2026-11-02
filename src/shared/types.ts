@@ -433,9 +433,17 @@ export const jiraStatusSchema = z.object({
   expired: z.boolean(),
   mcpConnected: z.boolean().optional(),
   expiresAt: z.number().optional(),
-  capabilities: z.record(z.string(), z.string().nullish()).optional()
+  capabilities: z.record(z.string(), z.string().nullish()).optional(),
+  /** Checkouts where agents currently share this connection through Revva's bridge. */
+  sharedCheckouts: z.number().optional(),
+  /** OpenCode config files that still declare a separate Atlassian MCP server. */
+  duplicateConfigs: z.array(z.string()).optional()
 })
 export type JiraStatus = z.infer<typeof jiraStatusSchema>
+
+/** Manual-only "Ready to Test" move. Either the ticket moved, or Revva stopped because a
+ *  linked PR is not merged yet (with that PR's URL so the UI can ask for confirmation). */
+export type ReadyToTestResult = { moved: true; status: string } | { moved: false; unmergedPrUrl: string }
 
 export const workModeSchema = z.enum(['interactive', 'auto'])
 export type WorkMode = z.infer<typeof workModeSchema>
@@ -904,6 +912,8 @@ export const pushEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('triage'), entries: z.array(triageEntrySchema) }),
   /** Poller found new comments/conflicts/approvals (or their flags cleared). */
   z.object({ kind: z.literal('github.alerts'), items: z.array(prAlertSchema) }),
+  /** Fresh PR snapshot for one scope (poller or refresh); feeds boards directly. */
+  z.object({ kind: z.literal('github.prs'), scope: z.enum(['mine', 'review']), items: z.array(pullRequestSchema) }),
   z.object({ kind: z.literal('review.updated'), workId: z.string(), round: z.number(), reviews: z.array(reviewRowSchema) }),
   /** Live streamed text from a reviewer/fixer session. */
   z.object({ kind: z.literal('review.delta'), workId: z.string(), sessionId: z.string(), messageId: z.string(), text: z.string() }),
@@ -915,6 +925,9 @@ export const pushEventSchema = z.discriminatedUnion('kind', [
 export type PushEvent = z.infer<typeof pushEventSchema>
 
 /* ---------- Renderer-facing API surface (implemented in preload) ---------- */
+
+/** Third-party dictation apps Revva can hint about in the composer. */
+export type DictationApp = 'hex' | 'wispr-flow'
 
 export interface RevvaApi {
   service: {
@@ -938,6 +951,10 @@ export interface RevvaApi {
     /** Whether the display/system sleep is currently being held off (caffeinate equivalent). */
     get(): Promise<boolean>
     set(enabled: boolean): Promise<boolean>
+  }
+  dictation: {
+    /** Dictation apps (Hex, Wispr Flow) installed on this machine, for the composer hint. */
+    detect(): Promise<DictationApp[]>
   }
   workspace: {
     list(): Promise<Workspace[]>
@@ -1013,6 +1030,8 @@ export interface RevvaApi {
     /** Sub-tickets of one issue, in board order. */
     /** Body, comments, sub-tasks and links of one issue; fetched when the details dialog opens. */
     detail(key: string): Promise<TicketDetail>
+    /** Manual-only Ready to Test move; Revva refuses while a linked PR is unmerged unless confirmed. */
+    readyToTest(key: string, confirmed?: boolean): Promise<ReadyToTestResult>
   }
   work: {
     start(input: StartWorkInput): Promise<WorkSummary>
@@ -1058,8 +1077,9 @@ export interface RevvaApi {
     tackle(workId: string): Promise<void>
   }
   github: {
-    /** Open PRs authored by / reviewing for the gh user (plus recently merged in "mine"). */
-    list(scope?: 'mine' | 'review'): Promise<PullRequest[]>
+    /** Open PRs authored by / reviewing for the gh user. Served from the poller's
+     *  hot snapshot when fresh; `force` (manual refresh) always re-runs the gh path. */
+    list(scope?: 'mine' | 'review', force?: boolean): Promise<PullRequest[]>
     /** Spin up a PR-review agent session (worktree checked out in the background). */
     review(prUrl: string): Promise<TaskSessionResult>
     /** New chat linked to the PR (+ its ticket), checked out at the PR's branch; opens directly. */

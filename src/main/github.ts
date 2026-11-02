@@ -67,6 +67,11 @@ type PrSeen = {
 const SEEN_KEY = 'githubPrSeen'
 const POLL_INTERVAL_MS = 60_000
 const DESKTOP_NOTIFICATION_INTERVAL_MS = 5 * 60_000
+/** The poller refreshes Mine every tick and Needs review every Nth tick, so a
+ *  snapshot younger than these limits is served as-is: opening a board never
+ *  waits on the slow gh search + GraphQL round-trips. */
+const LIST_FRESH_MS: Record<'mine' | 'review', number> = { mine: 90_000, review: 390_000 }
+const REVIEW_POLL_EVERY_N_TICKS = 5
 
 class GitHubManager {
   private login: string | undefined
@@ -74,6 +79,9 @@ class GitHubManager {
   private lastInfo = new Map<string, PrSeen>()
   private lastMine: PullRequest[] | undefined
   private refreshes = new Map<'mine' | 'review', Promise<PullRequest[]>>()
+  /** Hot snapshots so opening the GitHub page never waits on the slow gh path. */
+  private lastReview: PullRequest[] | undefined
+  private fetchedAt: Record<'mine' | 'review', number> = { mine: 0, review: 0 }
 
   /** Feature-detect for the UI (tab shows a hint instead of errors when gh is missing). */
   async available(): Promise<boolean> {
@@ -95,6 +103,7 @@ class GitHubManager {
   private notifiedKeys = new Set<string>()
   private polling = false
   private lastDesktopPoll = 0
+  private pollTicks = 0
 
   startPolling(): void {
     if (this.pollTimer) return
@@ -103,6 +112,11 @@ class GitHubManager {
       this.polling = true
       try {
         if (!(await this.available())) return
+        // Warm the board caches in the background so opening either tab is
+        // instant; Mine additionally feeds the alert indicator.
+        this.pollTicks++
+        await this.list('mine', true)
+        if ((this.pollTicks - 1) % REVIEW_POLL_EVERY_N_TICKS === 0) void this.list('review', true).catch(() => undefined)
         const alerts = await this.alerts()
         // Sidebar freshness is independent of the existing desktop cadence.
         const now = Date.now()
@@ -138,7 +152,7 @@ class GitHubManager {
   }
 
   /** New comments / conflicts / approvals on MY PRs only. The review-requested
-   *  scope never alerts — its PRs are not even fetched until the tab is opened. */
+   *  scope never alerts, but it is polled (slower cadence) to keep its board warm. */
   async alerts(): Promise<PrAlert[]> {
     await this.list('mine')
     if (!this.lastMine) throw new Error('GitHub alert status could not be refreshed. Check gh authentication and connectivity; existing alerts are kept.')
@@ -180,9 +194,26 @@ class GitHubManager {
     }
   }
 
+  private pushList(scope: 'mine' | 'review', items: PullRequest[]): void {
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(IPC.eventPush, { kind: 'github.prs', scope, items })
+    }
+  }
+
+  /** Drop the hot snapshot so the next list() really refetches (post-mutation). */
+  invalidate(scope: 'mine' | 'review'): void {
+    this.fetchedAt[scope] = 0
+  }
+
   /** Open PRs I authored, or PRs where my review is requested. Merged PRs are
-   *  deliberately absent — they are done, not waiting on anyone. */
-  async list(scope: 'mine' | 'review' = 'mine'): Promise<PullRequest[]> {
+   *  deliberately absent — they are done, not waiting on anyone.
+   *  Fresh snapshots from the background poller are served immediately; `force`
+   *  is for the manual refresh button only. */
+  async list(scope: 'mine' | 'review' = 'mine', force = false): Promise<PullRequest[]> {
+    if (!force && Date.now() - this.fetchedAt[scope] < LIST_FRESH_MS[scope]) {
+      const cached = scope === 'mine' ? this.lastMine : this.lastReview
+      if (cached) return cached
+    }
     const pending = this.refreshes.get(scope)
     if (pending) return pending
     const refresh = this.fetchList(scope)
@@ -238,6 +269,14 @@ class GitHubManager {
           if (saved) Object.assign(pr, { ...saved, ...pr })
         }
       }
+    } else if (enriched) {
+      this.lastReview = prs
+    }
+    // A fully enriched snapshot is what boards serve from and what gets pushed to
+    // open windows; a failed status lookup keeps the previous snapshot authoritative.
+    if (enriched) {
+      this.fetchedAt[scope] = Date.now()
+      this.pushList(scope, scope === 'mine' ? this.lastMine! : this.lastReview!)
     }
     return prs
   }
@@ -559,6 +598,9 @@ class GitHubManager {
     }
     // Reflect the merge locally at once: flags + linked work's state when known.
     this.markSeen(prUrl)
+    this.invalidate('mine')
+    this.invalidate('review')
+    void this.list('mine').catch(() => undefined)
     const work = getDb().prepare('SELECT id FROM work WHERE pr_url = ?').get(prUrl) as { id: string } | undefined
     if (work) workManager.setReviewState(work.id, 'SHIPPED')
   }
@@ -604,6 +646,8 @@ class GitHubManager {
         throw new Error(`Push of rebased branch failed (fork head?): ${push.err.slice(0, 300)}`)
       }
       this.markSeen(prUrl)
+      this.invalidate('mine')
+      void this.list('mine').catch(() => undefined)
     } finally {
       await git(repoDir, ['worktree', 'remove', '--force', worktreeDir])
       await git(repoDir, ['branch', '-D', `revva/rebase-${pr.number}`])

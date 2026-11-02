@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowUp, Check, ChevronDown, Copy, Cpu, ImageIcon, Square, Tag, X } from 'lucide-react'
+import { ArrowUp, Check, ChevronDown, Copy, Cpu, ImageIcon, Mic, Square, Tag, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Textarea } from '@/components/ui/textarea'
@@ -17,7 +17,7 @@ import { SessionStats } from '@/components/session-stats'
 import { AgentsPanel } from '@/components/agents-panel'
 import { TranscriptActivityStrip, TranscriptContent, createTranscriptActivityStore } from '@/components/transcript-content'
 import { Choice } from './NewChatDialog'
-import type { AgentInfo, ChatMessage, FileHit, ModelRef, PromptImage, PromptRefs, QueuedMessage, SkillInfo, WorkSummary, TranscriptPage } from '@shared/types'
+import type { AgentInfo, ChatMessage, DictationApp, FileHit, ModelRef, PromptImage, PromptRefs, QueuedMessage, SkillInfo, WorkSummary, TranscriptPage } from '@shared/types'
 import { FormCard, PermissionCard, useInbox } from './InboxView'
 import { PrConversationActions } from './PrConversationActions'
 import { ConversationEnvironment, ConversationActions, ConversationDetails } from './ConversationEnvironment'
@@ -28,6 +28,39 @@ import { ChatReviewButton } from './ChatReviewButton'
 const IMAGE_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp'
 const MAX_IMAGES = 8
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
+
+/* ---------- composer dictation hint (Hex / Wispr Flow) ---------- */
+
+const DICTATION_LABELS: Record<DictationApp, string> = { hex: 'Hex', 'wispr-flow': 'Wispr Flow' }
+
+/**
+ * Passive mic chip shown only when a global dictation app (Hex, Wispr Flow) is
+ * installed. Those apps are triggered by the user's own global shortcut and
+ * type into the focused field, so the chip must not pretend to record — it
+ * explains the flow and focuses the composer so the words land here.
+ */
+function DictationHint({ onFocusComposer }: { onFocusComposer: () => void }): React.JSX.Element | null {
+  const apps = useQuery({
+    queryKey: ['dictation-apps'],
+    queryFn: () => window.revva.dictation.detect(),
+    staleTime: 5 * 60_000
+  })
+  const names = (apps.data ?? []).map((app) => DICTATION_LABELS[app])
+  if (names.length === 0) return null
+  const label = names.join(' or ')
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button type="button" size="icon-sm" variant="ghost" className="text-muted-foreground" aria-label={`${label} can dictate into this message box`} onClick={onFocusComposer}>
+          <Mic />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="max-w-xs">
+        Hold your {label} shortcut and speak — the words type straight into this box. Click here first if the cursor is elsewhere.
+      </TooltipContent>
+    </Tooltip>
+  )
+}
 
 /* ---------- composer tokens: /skill, @file and #agent ---------- */
 
@@ -750,6 +783,7 @@ export function TranscriptView({
                 >
                   <ImageIcon />
                 </Button>
+                <DictationHint onFocusComposer={() => textareaRef.current?.focus()} />
                 <ComposerModelPickers key={sessionId} sessionId={sessionId} container={composerRef} />
                 {running && (
                   <Button type="button" size="icon-sm" variant="outline" className="ml-auto" aria-label="Stop response" title="Stop response" onClick={() => interrupt.mutate()}>
