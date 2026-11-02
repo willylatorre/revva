@@ -7,7 +7,8 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
-- (nothing yet)
+- **The test-audit reviewer is gone; a cross-model “Rigor” reviewer replaced it** — the test-audit gate kept costing more than it saved: its prompt loaded a repo-wide test-sweep skill with tooling this repo doesn't have, so it spent 25+ steps auditing untouched code instead of judging the diff's few tests. Every round now fans out sol-loop plus a Rigor reviewer — the same adversarial diff review on a deliberately different model (set your GPU Qwen default in Setup), with a self-contained prompt that also checks any tests the diff adds actually earn their keep: a test that re-asserts unchanged source, duplicates stronger coverage, or cannot fail is flagged as major with a recommendation to strip it. No repo-wide test sweeps, no testing-skill loading, no opinions on untouched tests. Existing test-audit role defaults and in-flight review rows migrate automatically.
+- **Review refuses to start on an empty diff** — when the resolved review base was already HEAD (`git diff base..HEAD` empty), reviewers were launched anyway and, finding nothing to review, wandered through reflogs, stashes and `git fsck` for the “missing” diff until timeout. Starting a round now fails immediately with “Nothing to review”, and reviewer prompts say to check the diff first and stop if empty instead of hunting for it.
 
 ## [1.3.0] - 2026-10-30
 

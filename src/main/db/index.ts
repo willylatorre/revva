@@ -169,6 +169,17 @@ function migrate(db: Database.Database): void {
       PRAGMA user_version = 10;
     `)
   }
+  if (version < 11) {
+    // The test-audit reviewer role became 'rigor' (a cross-model second reviewer).
+    // Rename persisted rows so recovery and role defaults keep working mid-round.
+    db.exec(`
+      UPDATE review SET role = 'rigor' WHERE role = 'testAudit';
+      UPDATE role_config SET role = 'rigor'
+        WHERE role = 'testAudit' AND NOT EXISTS (SELECT 1 FROM role_config WHERE role = 'rigor');
+      DELETE FROM role_config WHERE role = 'testAudit';
+      PRAGMA user_version = 11;
+    `)
+  }
 }
 
 function addColumnIfMissing(db: Database.Database, table: string, column: string, decl: string): boolean {

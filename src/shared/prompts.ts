@@ -58,7 +58,7 @@ export const WORKFLOW_SKILL_GUARD = `Revva workflow guard:
 export const BUILD_COMPLETION_INSTRUCTIONS = `${WORKFLOW_SKILL_GUARD}
 
 Revva implementation phase:
-- Do not launch code-review, test-audit or UI-review agents during implementation; Revva runs the independent review team after you finish. Run the repository's appropriate verification yourself.
+- Do not launch code-review or UI-review agents during implementation; Revva runs the independent review team after you finish. Run the repository's appropriate verification yourself.
 - Only when the ticket is fully implemented, verified according to repo policy, and committed, end your final message with exactly REVVA: DONE on its own last line.
 - If blocked, missing a dependency/plugin, asking a question, or only presenting a plan, explain what is needed and do NOT emit REVVA: DONE. Ending a turn alone does not start review.`
 

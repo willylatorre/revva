@@ -45,7 +45,7 @@ Revva is a reusable local desktop cockpit for running OpenCode sessions against 
 
 ### Ticket pipeline and delivery
 
-- **REQ-PIPE-1:** optional `/grill-me`, ticket implementation, pending-question handling, bounded Sol review loop, `/test-audit`, and `/impeccable` when relevant, with human-visible progress and findings.
+- **REQ-PIPE-1:** optional `/grill-me`, ticket implementation, pending-question handling, bounded Sol review loop, a cross-model rigor review, and `/impeccable` when relevant, with human-visible progress and findings.
 - **REQ-PIPE-2:** create ticket worktrees in the user-selected location; allow a dependent ticket to branch from another ticket's branch when available.
 - **REQ-PIPE-3:** after gates pass, offer PR creation and optional gh-stack integration; never merge automatically. Update Jira status/comment only when Jira is connected and the user has enabled those actions.
 - **REQ-PIPE-4:** poll configured Jira tickets for new unresolved comments; user explicitly starts the feedback-fix run; Revva reports proposed replies/resolutions and performs Jira writes only according to the user's configured approval policy.

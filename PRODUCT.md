@@ -18,7 +18,7 @@ A local Electron desktop cockpit that turns a Jira sprint into shipped, reviewed
 
 ## Positioning
 
-It orchestrates the user's *own* OpenCode service rather than bundling an assistant: every agent, model, and skill exposed by the connected service is eligible and discovered live (nothing hardcoded), reviews fan out to parallel read-only reviewers (sol-loop, test-audit, impeccable UI review) fanning in to one fixer with bounded re-review rounds, and shipping stays human-owned — Revva opens PRs but never merges. Competitors embed a model; Revva is a control room for a pipeline the user already owns.
+It orchestrates the user's *own* OpenCode service rather than bundling an assistant: every agent, model, and skill exposed by the connected service is eligible and discovered live (nothing hardcoded), reviews fan out to parallel read-only reviewers (sol-loop, a cross-model rigor reviewer, impeccable UI review) fanning in to one fixer with bounded re-review rounds, and shipping stays human-owned — Revva opens PRs but never merges. Competitors embed a model; Revva is a control room for a pipeline the user already owns.
 
 ## Operating Context
 

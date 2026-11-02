@@ -119,7 +119,7 @@ class ShipManager {
       const rows = getDb().prepare("SELECT role, status, findings FROM review WHERE work_id = ? AND round = ? AND role != 'fixer' ORDER BY id").all(workId, latestRound.round) as Array<{ role: string; status: string; findings: string }>
       for (const row of rows) latest.set(row.role, row)
     }
-    const gatesPassed = (['sol', 'testAudit', 'impeccable'] as const).every((role) => {
+    const gatesPassed = (['sol', 'rigor', 'impeccable'] as const).every((role) => {
       const row = latest.get(role)
       return row?.status === 'approved' || (role === 'impeccable' && row?.status === 'skipped' && row.findings === 'no UI files changed on this branch')
     })

@@ -17,7 +17,7 @@ One `Work` = one ticket being worked in one repo. States persist in `work.state`
                      └──────┬───────┘
               session idle + diff non-empty
                      ┌──────▼───────┐
-                     │   REVIEW     │  parallel subagent fan-out: sol-loop + test-audit
+                     │   REVIEW     │  parallel subagent fan-out: sol-loop + rigor
                      │  (looping)   │  + impeccable (if UI). Fan-in, one fixer, parallel re-review.
                      └──────┬───────┘  after budget ⇒ WAITING_HUMAN
               verdict APPROVE
@@ -72,7 +72,7 @@ The global **New Chat** action creates a standard OpenCode session with a select
   - In AUTO: resolve routine choices using explicit recommendations or safest supported project convention; record assumptions; ask only when blocked by ambiguous/high-impact intent, missing credentials, or unsafe permissions.
   ```
   Agent + model = the implementation-role defaults or per-run choices at Start Work. No provider/model is a default requirement; Bedrock-dependent selections are gated by Morning readiness.
-- **REVIEW fan-out (parallel):** launch one read-only subagent session per applicable gate at the same time: Sol-loop review, `test-audit`, and `impeccable` if UI is present. Each session uses that role's configured default or the user's per-run override. The user can choose GPU Qwen, GPT-6 Sol, or any other agent/model OpenCode exposes for any reviewer role. Each gets a focused prompt and the same base/diff/check results; none may edit, commit, or launch further reviewers.
+- **REVIEW fan-out (parallel):** launch one read-only subagent session per applicable gate at the same time: Sol-loop review, a cross-model second reviewer (`rigor` — adversarial review plus a strict check that tests added by the diff earn their keep), and `impeccable` if UI is present. Each session uses that role's configured default or the user's per-run override. The user can choose GPU Qwen, GPT-6 Sol, or any other agent/model OpenCode exposes for any reviewer role; the two reviewers are most useful on different models. Each gets a focused prompt and the same base/diff/check results; none may edit, commit, or launch further reviewers.
 - **REVIEW fan-in/fix:** wait for every gate; failed/timed-out/missing-skill reviewers are incomplete, not approval. Record individual outputs in the ledger, consolidate findings, then run one fixer (configured fixer role or implementation session) after reviewers have stopped. Fixer agent/model can be overridden per run.
 - **REVIEW re-review:** if behavior changes or blocker/should findings remain, re-launch applicable reviewers concurrently against the updated diff. Sol-loop uses one selected reviewer per round and honors its bounded round budget. UI/test reviewers repeat when their scope changed or findings remain.
 - **SHIP** — main-process code (not an agent): in Interactive mode, show the Ship action after approval; in AUTO, automatically proceed once gates pass. Ensure clean tree (agent's commits), `git push -u`, then:

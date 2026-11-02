@@ -54,9 +54,9 @@ export function StartWorkDialog({
   const [agentID, setAgentID] = useState('__default__')
   const [modelKey, setModelKey] = useState('__default__')
   const [showReviewOverrides, setShowReviewOverrides] = useState(false)
-  const [reviewSel, setReviewSel] = useState<Record<'sol' | 'testAudit' | 'impeccable' | 'fixer', { agentID: string; modelKey: string }>>({
+  const [reviewSel, setReviewSel] = useState<Record<'sol' | 'rigor' | 'impeccable' | 'fixer', { agentID: string; modelKey: string }>>({
     sol: { agentID: DEFAULT, modelKey: DEFAULT },
-    testAudit: { agentID: DEFAULT, modelKey: DEFAULT },
+    rigor: { agentID: DEFAULT, modelKey: DEFAULT },
     impeccable: { agentID: DEFAULT, modelKey: DEFAULT },
     fixer: { agentID: DEFAULT, modelKey: DEFAULT }
   })
@@ -115,7 +115,7 @@ export function StartWorkDialog({
         shipOnApprove: auto || shipOnApprove,
         reviewSel: {
           sol: selOrUndefined(reviewSel.sol.agentID, reviewSel.sol.modelKey),
-          testAudit: selOrUndefined(reviewSel.testAudit.agentID, reviewSel.testAudit.modelKey),
+          rigor: selOrUndefined(reviewSel.rigor.agentID, reviewSel.rigor.modelKey),
           impeccable: selOrUndefined(reviewSel.impeccable.agentID, reviewSel.impeccable.modelKey),
           fixer: selOrUndefined(reviewSel.fixer.agentID, reviewSel.fixer.modelKey)
         }
@@ -322,9 +322,9 @@ export function StartWorkDialog({
               <span className="text-muted-foreground">{showReviewOverrides ? '−' : '+'}</span>
             </button>
             {showReviewOverrides &&
-              (['sol', 'testAudit', 'impeccable', 'fixer'] as const).map((role) => (
+              (['sol', 'rigor', 'impeccable', 'fixer'] as const).map((role) => (
                 <div key={role} className="space-y-1">
-                  <Label className="text-[11px] capitalize">{role === 'testAudit' ? 'test audit' : role}</Label>
+                  <Label className="text-[11px] capitalize">{role}</Label>
                   <RoleSelectors
                     agentID={reviewSel[role].agentID}
                     modelKey={reviewSel[role].modelKey}

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CircleAlert, CircleCheck, CirclePause, Loader2, ScanEye, ShieldQuestion, Sparkles, Wrench, XCircle } from 'lucide-react'
+import { CircleAlert, CircleCheck, CirclePause, Loader2, Scale, ScanEye, Sparkles, Wrench, XCircle } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -11,7 +11,7 @@ import type { PipelineRole, PushEvent, ReviewRow, WorkState } from '@shared/type
 
 const roleMeta: Partial<Record<PipelineRole, { label: string; icon: React.JSX.Element }>> = {
   sol: { label: 'Sol-loop', icon: <ScanEye className="size-3.5" /> },
-  testAudit: { label: 'Test audit', icon: <ShieldQuestion className="size-3.5" /> },
+  rigor: { label: 'Rigor', icon: <Scale className="size-3.5" /> },
   impeccable: { label: 'UI review', icon: <Sparkles className="size-3.5" /> },
   fixer: { label: 'Fixer', icon: <Wrench className="size-3.5" /> }
 }
@@ -42,7 +42,7 @@ export function ReviewPanel({ workId, state, auto }: { workId: string; state: Wo
   if (round === 0 && !fixer) return (
     <div className="flex flex-col gap-4 text-sm">
       <dl className="divide-y">
-        {(['sol', 'testAudit', 'impeccable', 'fixer'] as const).map((role) => (
+        {(['sol', 'rigor', 'impeccable', 'fixer'] as const).map((role) => (
           <div key={role} className="flex items-center justify-between gap-3 py-3">
             <dt className="flex items-center gap-2">{roleMeta[role]?.icon}{roleMeta[role]?.label}</dt>
             <dd className="text-muted-foreground">Not started</dd>

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CircleAlert, CircleCheck, Loader2, ScanEye, ShieldQuestion, Sparkles, Wrench } from 'lucide-react'
+import { CircleAlert, CircleCheck, Loader2, Scale, ScanEye, Sparkles, Wrench } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -13,7 +13,7 @@ import { ReviewAgentActions, ReviewTranscript } from './ReviewPanel'
 
 const roles = [
   { role: 'sol', label: 'Sol-loop', icon: ScanEye },
-  { role: 'testAudit', label: 'Test audit', icon: ShieldQuestion },
+  { role: 'rigor', label: 'Rigor', icon: Scale },
   { role: 'impeccable', label: 'UI review', icon: Sparkles },
   { role: 'fixer', label: 'Fixer', icon: Wrench }
 ] as const

@@ -36,7 +36,7 @@ All privileged work. Subsystems:
 | `git/worktree.ts` | Prefer opencode `POST /api/worktree`; fall back to `git worktree add`. Naming/location come from user settings. Dependent tickets: `from` = parent ticket's branch. |
 | `pipeline/` | The state machine (§PIPELINE.md) + one `PhaseRunner` per phase. Persisted transitions; crash-safe resume on app start. |
 | `pipeline/auto.ts` | AUTO policy: answer safe/recommended structured questions, record assumptions, apply the configured permission boundary, and advance to automatic PR delivery when gates pass. |
-| `review/` | sol-loop round runner, test-audit runner, impeccable runner (see §6). |
+| `review/` | sol-loop round runner, rigor (cross-model second reviewer) runner, impeccable runner (see §6). |
 | `ship/` | `gh pr create`/`gh stack submit`, Jira transition + summary comment. |
 | `scripts.ts` | User one-click shell scripts (name + command/alias, optional cwd) run via interactive zsh with live output, kill, history. Also probes whether loopback endpoints referenced by provider base URLs are listening (drives model gating). Revva contains no AWS/SSO/proxy logic — users paste their own scripts (e.g. `morning`). |
 | `chat/` | Create/list/reopen general OpenCode sessions; role/model/skill selection; transcript, follow-up prompts, interrupt, questions/permissions. No Jira association. |
@@ -96,7 +96,7 @@ chat(sessionId PK, title, location, agentID, providerID, modelID, createdAt, upd
 phase(workId, node TEXT, status, startedAt, endedAt, detail JSON, PK(workId,node))
 question(id PK, workId NULL, sessionId, formId, kind 'form'|'permission', title JSON,
      state 'pending'|'answered'|'rejected', answeredBy, createdAt, answeredAt)  -- full audit trail; live = state='pending'
-reviewRun(id PK, workId, kind 'sol-loop'|'test-audit'|'impeccable', round, sessionId,
+reviewRun(id PK, workId, kind 'sol-loop'|'rigor'|'impeccable', round, sessionId,
      agentID, providerID, modelID, verdict NULL, ledger JSON, startedAt, endedAt)
 autoDecision(id PK, workId, sessionId NULL, kind, input JSON, choice JSON,
      rationale TEXT, state, createdAt)                        -- choices, assumptions, pauses, delivery events
@@ -120,9 +120,9 @@ interface ReviewBatchRunner {
 ```
 
 - **Role selection:** `GET /api/agent` and `GET /api/model` populate selectors. Persist a default agent/model per role; permit per-run overrides. Agent and model are selectable independently where OpenCode supports that combination. Revalidate against the live inventory at run time; never silently swap a missing choice.
-- **Parallel fan-out per review round:** create OpenCode child/subagent sessions concurrently (set `parentID` to the implementation session where supported): (1) one Sol-loop reviewer, (2) a test-audit reviewer, and (3) an impeccable reviewer only if the diff has UI. Each role uses its saved default or per-run agent/model choice. Reviewers do not edit files or start other reviewers. The Sol loop has **one reviewer per round**, not multiple Sol reviewers.
+- **Parallel fan-out per review round:** create OpenCode child/subagent sessions concurrently (set `parentID` to the implementation session where supported): (1) one Sol-loop reviewer, (2) a rigor reviewer (cross-model second opinion), and (3) an impeccable reviewer only if the diff has UI. Each role uses its saved default or per-run agent/model choice. Reviewers do not edit files or start other reviewers. The Sol loop has **one reviewer per round**, not multiple Sol reviewers.
 - **sol-loop**: vendored skill at `revva/skills/sol-loop` (from t3dotgg/tstack), adapted from T3 delegation to a dedicated OpenCode reviewer session. The user may select GPU Qwen, GPT-6 Sol, or any other available agent/model for this role; the skill behavior is the review protocol, not a forced model identity. Prompt = Round-1 brief (base sha, intent, checks). Default maximum 3 rounds (up to 5 only for the skill's stated high-risk cases or user request); ledger per finding. A separate fixer session applies the consolidated findings after all reviewers finish.
-- **test-audit**: independent reviewer session with the skill activated if installed/available; its agent/model is independently configurable. If missing, mark the gate unavailable and ask whether to install/continue; never report it as passed.
+- **rigor**: independent second reviewer session, most useful on a different model than sol-loop so the reports cross-check; its agent/model is independently configurable. Its prompt is self-contained (no repo-wide testing skill): adversarial diff review plus a strict check that any tests the diff adds earn their keep — flagging re-asserted, duplicative, implementation-coupled, or unfailable tests for stripping, following the repository's own testing policy.
 - **impeccable**: independent reviewer session when changed files/UI signal indicates UI work; agent/model independently configurable. Policy configurable (warn/block).
 - **Fan-in and re-review:** wait for every applicable reviewer result; errors/timeouts are not approvals. Consolidate/dedupe findings, then one fixer handles them. Launch applicable reviewers concurrently again when behavior changes or blocker/should findings remain, subject to bounded budgets. Preserve each subagent's chosen agent/model, verdict, output, and round in the ledger. Do not allow concurrent reviewers to edit the same worktree.
 

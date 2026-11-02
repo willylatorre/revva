@@ -232,7 +232,7 @@ export function SetupView(): React.JSX.Element {
 const REVIEW_ROLES: Array<{ role: PipelineRole; label: string; hint: string }> = [
   { role: 'build', label: 'Build', hint: 'default agent/model for Start flow & ticket sessions' },
   { role: 'sol', label: 'Sol-loop', hint: 'adversarial code review, every round' },
-  { role: 'testAudit', label: 'Test audit', hint: 'tests around changed code' },
+  { role: 'rigor', label: 'Rigor', hint: 'cross-model second reviewer + test-waste check' },
   { role: 'impeccable', label: 'UI review', hint: 'only when UI files change' },
   { role: 'fixer', label: 'Fixer', hint: 'applies consolidated findings' },
   { role: 'prReview', label: 'PR review', hint: 'GitHub tab review sessions' },

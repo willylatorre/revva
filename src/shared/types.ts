@@ -456,14 +456,14 @@ export type WorkState = z.infer<typeof workStateSchema>
 /* ---------- Review pipeline (M4) ---------- */
 
 /** Read-only reviewer roles, fanned out concurrently each round. */
-export const reviewRoleSchema = z.enum(['sol', 'testAudit', 'impeccable'])
+export const reviewRoleSchema = z.enum(['sol', 'rigor', 'impeccable'])
 export type ReviewRole = z.infer<typeof reviewRoleSchema>
 
 /** Human labels for roles (renderer). */
 export const roleLabels: Record<PipelineRole, string> = {
   build: 'Build',
   sol: 'Sol-loop',
-  testAudit: 'Test audit',
+  rigor: 'Rigor',
   impeccable: 'UI review',
   fixer: 'Fixer',
   prReview: 'PR review',
@@ -471,7 +471,7 @@ export const roleLabels: Record<PipelineRole, string> = {
 }
 
 /** Pipeline/task roles that take an agent/model selection. */
-export const pipelineRoleSchema = z.enum(['build', 'sol', 'testAudit', 'impeccable', 'fixer', 'prReview', 'prDescription'])
+export const pipelineRoleSchema = z.enum(['build', 'sol', 'rigor', 'impeccable', 'fixer', 'prReview', 'prDescription'])
 export type PipelineRole = z.infer<typeof pipelineRoleSchema>
 
 export const roleSelSchema = z.object({
@@ -576,7 +576,7 @@ export const startWorkInputSchema = z.object({
   reviewSel: z
     .object({
       sol: roleSelSchema.optional(),
-      testAudit: roleSelSchema.optional(),
+      rigor: roleSelSchema.optional(),
       impeccable: roleSelSchema.optional(),
       fixer: roleSelSchema.optional()
     })

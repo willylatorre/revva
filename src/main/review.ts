@@ -1,7 +1,7 @@
 /**
  * M4 review pipeline: parallel read-only reviewer fan-out → fan-in → one fixer → bounded re-review.
  *
- * - One round spawns concurrent reviewer sessions (sol-loop always; test-audit always;
+ * - One round spawns concurrent reviewer sessions (sol-loop always; rigor always;
  *   impeccable only when UI files changed AND the skill exists).
  * - Reviewers never edit: prompts forbid writes/commits/subagents. Any incomplete or
  *   errored reviewer blocks approval — a missing skill is 'skipped', never 'approved'.
@@ -34,6 +34,7 @@ import {
   type ModelRef,
   type PipelineRole,
   type ReviewRole,
+  roleLabels,
   type ReviewRow,
   type ReviewStatus
 } from '@shared/types'
@@ -199,7 +200,7 @@ class ReviewManager {
       if (currentFixer(rows)) this.settledRounds.add(`${work.id}:${round}`)
       for (const row of rows) {
         if (!['pending', 'running'].includes(row.status) && row.error !== LEGACY_RESTART_ERROR) continue
-        if (!['sol', 'testAudit', 'impeccable', 'fixer'].includes(row.role)) continue
+        if (!['sol', 'rigor', 'impeccable', 'fixer'].includes(row.role)) continue
         if (!row.sessionId) {
           this.update(row.id, 'error', undefined, 'Review session was not created before disconnection. Retry this agent.')
           continue
@@ -311,6 +312,9 @@ class ReviewManager {
       const head = (await exec('git', ['-C', work.worktree_dir, 'rev-parse', 'HEAD'])).stdout.trim()
       if (!head) throw new Error('Could not determine the commit to review.')
       const scope = await this.reviewScope(work)
+      // An empty diff means the branch never diverged from its base (or the base
+      // resolved to HEAD). Launching reviewers on an empty diff only produces flailing.
+      if (scope.base === head) throw new Error('Nothing to review: the review base is the current HEAD. Make and commit changes, or re-select the review folder if the base is wrong.')
       getDb().prepare('UPDATE work SET review_head = ?, review_base = ? WHERE id = ?').run(head, scope.base, workId)
 
       const perRun = (work.review_sel ? JSON.parse(work.review_sel) : undefined) as Record<
@@ -322,7 +326,7 @@ class ReviewManager {
 
       const plan: Array<{ role: ReviewRole; skipReason?: string; error?: string }> = [
         { role: 'sol' },
-        { role: 'testAudit' },
+        { role: 'rigor' },
         uiChanged
           ? skills.has('impeccable')
             ? { role: 'impeccable' }
@@ -388,7 +392,7 @@ class ReviewManager {
     if (!row || row.status === 'pending' || row.status === 'running' || row.status === 'skipped') {
       throw new Error('Only a completed reviewer in the latest round can be retried.')
     }
-    if (!['sol', 'testAudit', 'impeccable', 'fixer'].includes(row.role)) throw new Error('This role cannot be retried.')
+    if (!['sol', 'rigor', 'impeccable', 'fixer'].includes(row.role)) throw new Error('This role cannot be retried.')
     if (row.role === 'fixer' && row.status !== 'error') throw new Error('Only a failed fixer can be retried.')
 
     this.starting.add(workId)
@@ -686,7 +690,7 @@ class ReviewManager {
     if (rows.some((r) => r.status === 'pending' || r.status === 'running')) return
     this.settledRounds.add(key) // fan-in runs exactly once per round, even on parallel settle
 
-    const missing = (['sol', 'testAudit', 'impeccable'] as const).filter((role) => !rows.some((r) => r.role === role))
+    const missing = (['sol', 'rigor', 'impeccable'] as const).filter((role) => !rows.some((r) => r.role === role))
     const invalidSkip = rows.some((r) => r.status === 'skipped' && (r.role !== 'impeccable' || r.findings !== 'no UI files changed on this branch'))
     if (missing.length || invalidSkip) {
       const reason = missing.length ? `Missing reviewers: ${missing.join(', ')}.` : 'A required reviewer was skipped.'
@@ -921,16 +925,19 @@ function reviewerPrompt(
   scope: ReviewScope
 ): string {
   const common = [
-    `You are Revva's ${role} reviewer for ${work.ticket_key || `conversation on ${work.branch}`}, round ${round}.`,
+    `You are Revva's ${roleLabels[role]} reviewer for ${work.ticket_key || `conversation on ${work.branch}`}, round ${round}.`,
     `Repository worktree: ${work.worktree_dir} (branch ${work.branch}). Review ONLY the changes from base commit ${scope.base} to HEAD (git diff ${scope.base} HEAD).`,
     '',
     'STRICT READ-ONLY: do not edit or create files, do not commit, do not push, do not start subagents or other agents.',
     'Review the current code independently. Do not read same-round peer reviews or message/steer other agents. If Revva supplies related-thread context, use only those scoped references to clarify implementation validation or verify your previous findings and the fixer’s claims.',
-    ''
+    '',
+    `Run \`git diff --stat ${scope.base} HEAD\` FIRST. If it is empty (base equals HEAD), there is nothing to review: output one line saying so and your verdict line, then stop — never hunt for the diff through reflogs, stashes, fsck, other branches, or the filesystem.`,
+    'Stay on the diff: read the changed files and their immediate context. Do not audit or propose changes to code the diff does not touch, and do not run repo-wide discovery sweeps.',
+    'Do not load repo-wide workflow skills or their validation tooling for a diff review — judge from the diff and surrounding code with this prompt alone.'
   ]
   const roleBody: Record<ReviewRole, string> = {
-    sol: `${skills.has('sol-loop') ? 'Apply the sol-loop review protocol (use the sol-loop skill).' : 'Apply an adversarial senior-engineer review protocol.'}\nFor each finding give: severity (blocker / major / minor), file:line, why it matters, and a concrete fix. Judge correctness, edge cases, and fit with the ticket's intent.`,
-    testAudit: `${skills.has('test-audit') ? 'Apply the test-audit skill' : 'Audit verification as a strict test reviewer'} in review mode, scoped strictly to tests, test-support code, and verification gaps introduced or modified by this branch's diff (git diff ${scope.base} HEAD). Do not audit, sweep, or propose deletions for pre-existing tests the diff does not touch; repo-wide test discovery is out of scope. Judge only whether this diff's tests pass the authoring gate and value bar, and spend no more effort on tests than on the changed code itself.\nFollow the repository's testing policy, including explicit prohibitions on new unit/E2E tests or testing infrastructure. Flag: acceptance criteria without the verification the repository requires, implementation-coupled or duplicative tests, tests that cannot fail. Missing meaningful required verification is a major; do not demand automated coverage the repository intentionally forbids.`,
+    sol: `${skills.has('sol-loop') ? 'Apply the sol-loop review protocol (use the sol-loop skill).' : 'Apply an adversarial senior-engineer review protocol.'}\nFor each finding give: severity (blocker / major / minor), file:line, why it matters, and a concrete fix. Judge correctness, edge cases, and fit with the ticket's intent.\nVerification economics: tests this diff adds must protect behavior this diff changed. Flag a new test as major when it re-asserts unchanged source code, duplicates stronger coverage, or exists for a repo whose policy forbids new automated tests — a test added here without a clear risk it retires is wasted maintenance cost; recommend stripping it.`,
+    rigor: `You are the independent second reviewer, deliberately on a different model than the primary reviewer; review so the two reports cross-check each other. Apply an adversarial senior-engineer protocol to this diff: correctness, edge cases, error handling, concurrency/state transitions, security, data loss, performance, and whether the change matches the ticket's intent. For each finding give: severity (blocker / major / minor), file:line, why it matters, and a concrete fix.\nTests and verification, judged only on this diff: first state whether the diff adds or changes any tests. If it does, demand proof each test protects behavior this diff changed — flag as major any test that re-asserts unchanged source code, duplicates stronger coverage, tests implementation instead of observable behavior, or cannot fail; recommend stripping it. If it does not, check only for verification the repository's own policy explicitly requires. Follow the repository's testing policy, including explicit prohibitions on new unit/E2E tests or testing infrastructure. Do not run repo-wide test sweeps, load repo-wide testing skills, or judge pre-existing tests this diff does not touch.`,
     impeccable: `Apply the impeccable skill to the UI changes on this branch: hierarchy, spacing, typography, states, responsiveness, and copy. Flag anything that would embarrass the author in a design review. Changed UI files: ${JSON.stringify(scope.uiFiles)}. Use these paths to select the relevant app(s) and target Impeccable context; if the correct scope remains ambiguous, ask the user.`
   }
   const verdict = `blockers or majors ⇒ CHANGES; minors-only or clean ⇒ APPROVED.`

@@ -14,7 +14,7 @@ import { FormCard, PermissionCard } from '@/views/InboxView'
 
 const roleLabels: Record<string, string> = {
   sol: 'Sol-loop',
-  testAudit: 'Test audit',
+  rigor: 'Rigor',
   impeccable: 'UI review',
   fixer: 'Fixer'
 }

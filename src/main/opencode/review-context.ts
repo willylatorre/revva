@@ -28,7 +28,7 @@ function latestAttempts(workId: string, round: number): ReviewAttempt[] {
 /** A stopped/superseded agent loses access; a retry/resume uses its latest row. */
 export function reviewTranscriptContext(sessionId: string): ReviewTranscriptContext | undefined {
   const actor = getDb().prepare('SELECT id, work_id, session_id, role, round, status FROM review WHERE session_id = ? ORDER BY id DESC LIMIT 1').get(sessionId) as ReviewAttempt | undefined
-  if (!actor || actor.status !== 'running' || !['sol', 'testAudit', 'impeccable', 'fixer'].includes(actor.role)) return undefined
+  if (!actor || actor.status !== 'running' || !['sol', 'rigor', 'impeccable', 'fixer'].includes(actor.role)) return undefined
   const work = getDb().prepare(`SELECT session_id, worktree_dir, state, review_cycle_start,
     (SELECT MAX(round) FROM review WHERE work_id = work.id) AS latest_round FROM work WHERE id = ?`).get(actor.work_id) as
     | { session_id: string | null; worktree_dir: string; state: string; review_cycle_start: number | null; latest_round: number }
