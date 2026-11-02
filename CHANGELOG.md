@@ -7,7 +7,7 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
-- (nothing yet)
+- **Auto-send after paste (opt-in) for dictation** — Hex and Wispr Flow drop the finished transcription in as a *paste*, so the last manual step was still Cmd+Enter. The composer's mic chip now opens a small popover (dictation how-to plus an “Auto-send after paste” switch). With it on, a text paste that lands in an *empty* message box sends immediately — your dictated sentence fires the moment you release the hotkey. Pasting into a draft you're typing, pasting images, or the switch off changes nothing; pastes behave exactly as before.
 
 ## [1.4.0] - 2026-11-02
 

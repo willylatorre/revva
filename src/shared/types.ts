@@ -85,7 +85,8 @@ export const settingsKeySchema = z.enum([
   'prompt.description',
   'watchdog.staleSecs',
   'cards.pinnedOrder',
-  'keepAwake.enabled'
+  'keepAwake.enabled',
+  'composer.autoSendPaste'
 ])
 export type SettingsKey = z.infer<typeof settingsKeySchema>
 

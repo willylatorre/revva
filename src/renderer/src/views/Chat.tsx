@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowUp, Check, ChevronDown, Copy, Cpu, ImageIcon, Mic, Square, Tag, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
 import { Textarea } from '@/components/ui/textarea'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -34,31 +35,58 @@ const MAX_IMAGE_BYTES = 8 * 1024 * 1024
 const DICTATION_LABELS: Record<DictationApp, string> = { hex: 'Hex', 'wispr-flow': 'Wispr Flow' }
 
 /**
- * Passive mic chip shown only when a global dictation app (Hex, Wispr Flow) is
- * installed. Those apps are triggered by the user's own global shortcut and
- * type into the focused field, so the chip must not pretend to record — it
- * explains the flow and focuses the composer so the words land here.
+ * Mic chip shown only when a global dictation app (Hex, Wispr Flow) is installed.
+ * Those apps are triggered by the user's own global shortcut and paste/type into
+ * the focused field, so the chip must not pretend to record: it opens a popover
+ * that explains the flow, focuses the composer (so words land here), and offers
+ * "Auto-send after paste" — a dictated message arrives as a text paste into an
+ * empty box, which is exactly the signal to send it without the extra Cmd+Enter.
  */
-function DictationHint({ onFocusComposer }: { onFocusComposer: () => void }): React.JSX.Element | null {
+function DictationHint({ container }: {
+  container: React.RefObject<HTMLElement | null>
+}): React.JSX.Element | null {
+  const qc = useQueryClient()
+  const [open, setOpen] = useState(false)
   const apps = useQuery({
     queryKey: ['dictation-apps'],
     queryFn: () => window.revva.dictation.detect(),
     staleTime: 5 * 60_000
   })
+  const autoSend = useQuery({
+    queryKey: ['settings', 'composer.autoSendPaste'],
+    queryFn: () => window.revva.settings.get('composer.autoSendPaste')
+  })
+  const enabled = autoSend.data === true
+  const setAutoSend = (next: boolean): void => {
+    qc.setQueryData(['settings', 'composer.autoSendPaste'], next)
+    void window.revva.settings.set('composer.autoSendPaste', next).then(() => {
+      void qc.invalidateQueries({ queryKey: ['settings', 'composer.autoSendPaste'] })
+    })
+  }
   const names = (apps.data ?? []).map((app) => DICTATION_LABELS[app])
   if (names.length === 0) return null
   const label = names.join(' or ')
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button type="button" size="icon-sm" variant="ghost" className="text-muted-foreground" aria-label={`${label} can dictate into this message box`} onClick={onFocusComposer}>
-          <Mic />
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent side="top" className="max-w-xs">
-        Hold your {label} shortcut and speak — the words type straight into this box. Click here first if the cursor is elsewhere.
-      </TooltipContent>
-    </Tooltip>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={<Button type="button" size="icon-sm" variant="ghost" className={cn('text-muted-foreground', enabled && 'text-foreground')} aria-label={`${label} can dictate into this message box`} aria-pressed={enabled} />}
+      >
+        <Mic />
+      </PopoverTrigger>
+      <PopoverContent container={container} side="top" align="start" className="w-72 gap-2">
+        <PopoverTitle>Dictate your message</PopoverTitle>
+        <p className="text-xs text-muted-foreground">
+          Click this box, hold your {label} shortcut, speak — the words paste straight in.
+        </p>
+        <label className="flex cursor-pointer items-center justify-between gap-3 border-t pt-2 text-xs">
+          <span>
+            <span className="font-medium">Auto-send after paste</span>
+            <span className="mt-0.5 block text-muted-foreground">Sends when a text paste lands in an empty box — your dictated message. Pasting into a draft never sends.</span>
+          </span>
+          <Switch size="sm" checked={enabled} onCheckedChange={setAutoSend} aria-label="Auto-send after paste" />
+        </label>
+      </PopoverContent>
+    </Popover>
   )
 }
 
@@ -222,6 +250,11 @@ export function TranscriptView({
   })
   const running = sendingSession === sessionId || (activity.data?.includes(sessionId) ?? false)
   const reviewing = work?.state === 'REVIEW' || work?.state === 'FIXING'
+  /** Off until the user turns it on in the composer's dictation popover. */
+  const autoSendPaste = useQuery({
+    queryKey: ['settings', 'composer.autoSendPaste'],
+    queryFn: () => window.revva.settings.get('composer.autoSendPaste')
+  }).data === true
   const visible = useTranscriptVisibility()
   const [attachment, setAttachment] = useState<{ sessionId: string; ready: Promise<void> } | null>(null)
   useEffect(() => {
@@ -464,9 +497,11 @@ export function TranscriptView({
   }
 
   const send = useMutation({
-    mutationFn: async (stopReview?: boolean) => {
+    mutationFn: async ({ stopReview, text: textOverride }: { stopReview?: boolean; text?: string } = {}) => {
       const sentAt = Date.now()
-      const text = input.trim()
+      // A paste-autosend fires before the draft state commits, so it passes its text directly.
+      const sentFrom = textOverride ?? input
+      const text = sentFrom.trim()
       const images = pendingImages
       // '/new' on its own is a command, not a message.
       if (text === '/new' && images.length === 0 && onNewSession) {
@@ -515,7 +550,14 @@ export function TranscriptView({
         void qc.invalidateQueries({ queryKey: ['session-activity'] })
         if (work) void qc.invalidateQueries({ queryKey: ['work-queue', work.id] })
       }
-      if (qc.getQueryData(draftKey) === input) {
+      const draftNow = qc.getQueryData<string>(draftKey)
+      if (textOverride !== undefined) {
+        // The paste (or its onChange) may have landed in the draft while sending — clear it if it is still just what we sent.
+        if (draftNow !== undefined && draftNow.trim() === text) {
+          qc.setQueryData(draftKey, '')
+          setDraft((current) => current.sessionId === sessionId && current.text.trim() === text ? { sessionId, text: '' } : current)
+        }
+      } else if (draftNow === input) {
         qc.setQueryData(draftKey, '')
         setDraft((current) => current.sessionId === sessionId && current.text === input ? { sessionId, text: '' } : current)
       }
@@ -631,7 +673,7 @@ export function TranscriptView({
           }} />}
           {reviewing && <div className="mx-auto mb-2 flex max-w-3xl flex-wrap items-center gap-2">
             <p className="min-w-0 flex-1 text-xs text-muted-foreground">{work?.state === 'FIXING' ? 'Fixing' : 'Review'} in progress. Follow-ups run after this cycle, before shipping.</p>
-            <Button type="button" size="xs" variant="outline" disabled={!canSend} onClick={() => send.mutate(true)}>{send.isPending ? 'Sending…' : 'Stop review and send now'}</Button>
+            <Button type="button" size="xs" variant="outline" disabled={!canSend} onClick={() => send.mutate({ stopReview: true })}>{send.isPending ? 'Sending…' : 'Stop review and send now'}</Button>
           </div>}
           {queued.length > 0 && (
             <div className="mx-auto mb-2 flex max-w-3xl flex-col gap-1">
@@ -656,14 +698,28 @@ export function TranscriptView({
             className="relative mx-auto max-w-3xl"
             onSubmit={(e) => {
               e.preventDefault()
-              if (canSend) send.mutate(undefined)
+              if (canSend) send.mutate({})
             }}
             onPaste={(e) => {
               const files = Array.from(e.clipboardData.files)
               if (files.some((f) => f.type.startsWith('image/'))) {
                 e.preventDefault()
                 void addImages(files)
+                return
               }
+              // Dictated messages arrive as a text paste into an empty box — with the hint's
+              // auto-send on, that is the "release the hotkey and it's sent" flow. A paste
+              // into an existing draft stays an ordinary paste.
+              if (!autoSendPaste) return
+              const pasted = e.clipboardData.getData('text/plain')
+              if (!pasted.trim()) return
+              const emptyBefore = input.length === 0 && pendingImages.length === 0 && !send.isPending
+              // Let the paste land in the textarea first, then send exactly what is there.
+              requestAnimationFrame(() => {
+                const el = textareaRef.current
+                const final = (el ? el.value : pasted).trim()
+                if (emptyBefore && final && el && el.value.trim() === final) send.mutate({ text: el.value })
+              })
             }}
             onDragOver={(e) => e.preventDefault()}
             onDrop={(e) => {
@@ -746,7 +802,7 @@ export function TranscriptView({
                   }
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault()
-                    if (canSend) send.mutate(undefined)
+                    if (canSend) send.mutate({})
                   }
                 }}
                 placeholder={
@@ -783,7 +839,7 @@ export function TranscriptView({
                 >
                   <ImageIcon />
                 </Button>
-                <DictationHint onFocusComposer={() => textareaRef.current?.focus()} />
+                <DictationHint container={composerRef} />
                 <ComposerModelPickers key={sessionId} sessionId={sessionId} container={composerRef} />
                 {running && (
                   <Button type="button" size="icon-sm" variant="outline" className="ml-auto" aria-label="Stop response" title="Stop response" onClick={() => interrupt.mutate()}>
