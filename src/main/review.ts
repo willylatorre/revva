@@ -41,8 +41,13 @@ import {
 
 const exec = promisify(execFile)
 
-/** Watchdog: a reviewer/fixer session stuck this long is errored out. */
-const SESSION_TIMEOUT_MS = 20 * 60_000
+/**
+ * Watchdog: a reviewer/fixer session stuck this long is errored out. The rigor
+ * reviewer on a self-hosted model without prompt cache routinely needs 15–20 min
+ * on a large diff, so this sits above that band; the "End early" control covers
+ * runs the human doesn't want to wait for.
+ */
+const SESSION_TIMEOUT_MS = 40 * 60_000
 const LEGACY_RESTART_ERROR = 'revva restarted while this review was running'
 
 interface ReviewDbRow {
@@ -108,6 +113,8 @@ interface TrackedSession {
   remainingMs: number
   deadline: number
   tracker: ActivityTracker
+  /** Set while End early interrupts the session; the partial report decides, not the interrupt event. */
+  endedEarly?: boolean
 }
 
 interface ReviewScope {
@@ -561,6 +568,49 @@ class ReviewManager {
     }
   }
 
+  /**
+   * End one running reviewer early on purpose: interrupt it and judge its round
+   * from the report it streamed so far. Partial findings without a final
+   * `VERDICT:` line parse as CHANGES (fail closed), so this can never sneak an
+   * approval through. Other reviewers of the round keep their results.
+   */
+  async finishReviewEarly(workId: string, reviewId: number): Promise<void> {
+    const rows = this.reviewsFor(workId)
+    const row = rows.find((r) => r.id === reviewId)
+    if (!row) throw new Error('Review not found.')
+    if (row.role === 'fixer') throw new Error('The fixer cannot be ended early — use Stop review and resume it later.')
+    if (row.status !== 'pending' && row.status !== 'running') throw new Error('This reviewer already finished.')
+    const tracked = row.sessionId ? this.sessions.get(row.sessionId) : undefined
+    if (!tracked) throw new Error('This reviewer is no longer running here. Use Stop review, then retry it.')
+    const sessionId = row.sessionId!
+    tracked.endedEarly = true
+    try {
+      await openCodeService.api.session.interrupt({ sessionID: sessionId })
+      for (let attempt = 0; ; attempt++) {
+        const remaining = await openCodeService.api.session.active()
+        if (!(sessionId in remaining)) break
+        if (attempt === 10) throw new Error('The reviewer has not stopped yet. Try End early again; nothing was changed.')
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      }
+      streamBuffer.flush(sessionId)
+      let partial = ''
+      try {
+        partial = await latestAssistantText(sessionId, AbortSignal.timeout(30_000), row.createdAt)
+      } catch {
+        // A missing transcript only means the round judges an empty report.
+      }
+      // A reviewer that wrote its verdict line before stopping gets that verdict;
+      // a partial report without one parses as CHANGES, never as approval.
+      const status = parseVerdict(partial)
+      await this.settle(sessionId, status, partial, status === 'changes' && !partial.trim()
+        ? 'Ended early by you before any report text streamed.'
+        : 'Ended early by you; the report so far decided this round.')
+    } finally {
+      // If settle bailed (already settling), let fan-in judge the round anyway.
+      void this.settleRoundIfDone(workId, row.round)
+    }
+  }
+
   private trackSession(sessionId: string, tracked: TrackedSession): void {
     this.sessions.set(sessionId, tracked)
     sessionIndex.register(sessionId, 'review')
@@ -621,6 +671,8 @@ class ReviewManager {
         void this.settle(sessionId, 'error', undefined, describeError(data.error ?? 'session failed'))
         break
       case 'session.execution.interrupted':
+        // End early owns this interruption: its partial report, not an error, decides.
+        if (tracked.endedEarly) break
         void this.settle(sessionId, 'error', undefined, 'reviewer was interrupted')
         break
     }
@@ -937,7 +989,7 @@ function reviewerPrompt(
   ]
   const roleBody: Record<ReviewRole, string> = {
     sol: `${skills.has('sol-loop') ? 'Apply the sol-loop review protocol (use the sol-loop skill).' : 'Apply an adversarial senior-engineer review protocol.'}\nFor each finding give: severity (blocker / major / minor), file:line, why it matters, and a concrete fix. Judge correctness, edge cases, and fit with the ticket's intent.\nVerification economics: tests this diff adds must protect behavior this diff changed. Flag a new test as major when it re-asserts unchanged source code, duplicates stronger coverage, or exists for a repo whose policy forbids new automated tests — a test added here without a clear risk it retires is wasted maintenance cost; recommend stripping it.`,
-    rigor: `You are the independent second reviewer, deliberately on a different model than the primary reviewer; review so the two reports cross-check each other. Apply an adversarial senior-engineer protocol to this diff: correctness, edge cases, error handling, concurrency/state transitions, security, data loss, performance, and whether the change matches the ticket's intent. For each finding give: severity (blocker / major / minor), file:line, why it matters, and a concrete fix.\nTests and verification, judged only on this diff: first state whether the diff adds or changes any tests. If it does, demand proof each test protects behavior this diff changed — flag as major any test that re-asserts unchanged source code, duplicates stronger coverage, tests implementation instead of observable behavior, or cannot fail; recommend stripping it. If it does not, check only for verification the repository's own policy explicitly requires. Follow the repository's testing policy, including explicit prohibitions on new unit/E2E tests or testing infrastructure. Do not run repo-wide test sweeps, load repo-wide testing skills, or judge pre-existing tests this diff does not touch.`,
+    rigor: `You are the independent second reviewer, deliberately on a different model than the primary reviewer; review so the two reports cross-check each other. Apply an adversarial senior-engineer protocol to this diff: correctness, edge cases, error handling, concurrency/state transitions, security, data loss, performance, and whether the change matches the ticket's intent. For each finding give: severity (blocker / major / minor), file:line, why it matters, and a concrete fix.\nWork only from the diff and the files it touches: read changed files plus the definitions they call, at most two hops out. Never run tests, linters, formatters, builds, or any other verification command — reason about the code instead of executing it. Never run repo-wide grep/rg/find sweeps; a targeted grep limited to a named file or directory you need for one specific call site is fine.\nTests and verification, judged only on this diff: first state whether the diff adds or changes any tests. If it does, judge each new test from reading it — flag as major any test that re-asserts unchanged source code, duplicates stronger coverage, tests implementation instead of observable behavior, or cannot fail; recommend stripping it. If it does not, check only for verification the repository's own policy explicitly requires. Follow the repository's testing policy, including explicit prohibitions on new unit/E2E tests or testing infrastructure. Do not judge pre-existing tests this diff does not touch.`,
     impeccable: `Apply the impeccable skill to the UI changes on this branch: hierarchy, spacing, typography, states, responsiveness, and copy. Flag anything that would embarrass the author in a design review. Changed UI files: ${JSON.stringify(scope.uiFiles)}. Use these paths to select the relevant app(s) and target Impeccable context; if the correct scope remains ambiguous, ask the user.`
   }
   const verdict = `blockers or majors ⇒ CHANGES; minors-only or clean ⇒ APPROVED.`

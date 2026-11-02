@@ -167,7 +167,7 @@ function ReviewDetail({ row, state, auto, onClose }: {
 }): React.JSX.Element {
   return (
     <div className="flex flex-col gap-3 text-sm">
-      {row.error && <p className={isReviewStopped(row) ? 'text-muted-foreground' : 'text-destructive'}>{row.error}</p>}
+      {row.error && <p className={row.status === 'error' && !isReviewStopped(row) ? 'text-destructive' : 'text-muted-foreground'}>{row.error}</p>}
       {!row.sessionId && !row.error && <p className="text-muted-foreground">{row.findings || 'No session was started.'}</p>}
       <ReviewAgentActions row={row} state={state} auto={auto} onRelaunched={onClose} />
       {row.sessionId && <ReviewTranscript row={row} onClose={onClose} />}
@@ -200,9 +200,13 @@ export function ReviewAgentActions({ row, state, auto, onRelaunched }: {
     : !['READY', 'WAITING_HUMAN', 'APPROVED'].includes(state) ? 'Wait for the current work to settle before relaunching this agent.'
     : undefined
   const label = roleMeta[row.role]?.label ?? row.role
+  const canFinishEarly = row.role !== 'fixer' && (row.status === 'running' || row.status === 'pending')
   const action = useMutation({
-    mutationFn: (kind: 'retry' | 'stop') => kind === 'stop'
-      ? window.revva.work.reviewStop(row.workId) : window.revva.work.reviewRetry(row.workId, row.id),
+    mutationFn: (kind: 'retry' | 'stop' | 'early') => kind === 'stop'
+      ? window.revva.work.reviewStop(row.workId)
+      : kind === 'early'
+        ? window.revva.work.reviewFinishEarly(row.workId, row.id)
+        : window.revva.work.reviewRetry(row.workId, row.id),
     onSuccess: async (_result, kind) => {
       if (kind === 'retry') {
         const fresh = await reviews.refetch()
@@ -220,6 +224,11 @@ export function ReviewAgentActions({ row, state, auto, onRelaunched }: {
       <Button size="sm" variant="outline" disabled={!!reason || action.isPending} onClick={() => action.mutate('retry')}>
         {action.isPending && action.variables === 'retry' ? 'Starting…' : row.role === 'fixer' && row.status === 'error' ? 'Resume fixer' : `${row.status === 'error' ? 'Retry' : 'Relaunch'} ${label}`}
       </Button>
+      {canFinishEarly && <Button size="sm" variant="outline" disabled={action.isPending}
+        title="Interrupt this reviewer and judge the round from its report so far. A report without a final verdict counts as changes — this never approves silently."
+        onClick={() => action.mutate('early')}>
+        {action.isPending && action.variables === 'early' ? 'Ending…' : 'End early'}
+      </Button>}
       {(running || state === 'WAITING_HUMAN') && <Button size="sm" variant="ghost" disabled={action.isPending} onClick={() => action.mutate('stop')}>
         {action.isPending && action.variables === 'stop' ? 'Stopping…' : 'Stop review'}
       </Button>}

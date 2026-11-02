@@ -72,17 +72,31 @@ class InboxManager extends EventEmitter {
     if (changed) this.push()
   }
 
+  /** True while the session waits on a question or permission answer. */
+  hasPending(sessionID: string): boolean {
+    for (const item of this.pending.values()) if (item.sessionID === sessionID) return true
+    return false
+  }
+
+  /** Remove a pending item and tell listeners when the session is free again. */
+  private clearPending(key: string): void {
+    const item = this.pending.get(key)
+    if (!item) return
+    this.pending.delete(key)
+    if (!this.hasPending(item.sessionID)) this.emit('unblocked', item.sessionID)
+  }
+
   /** Answer a question form; answers are audited. */
   async replyForm(sessionID: string, formID: string, answer: Record<string, string | number | boolean | string[]>): Promise<void> {
     await openCodeService.api.session.form.reply({ sessionID, formID, answer })
-    this.pending.delete(`form:${formID}`)
+    this.clearPending(`form:${formID}`)
     this.audit(sessionID, 'form', formID, answer)
     this.push()
   }
 
   async replyPermission(sessionID: string, requestID: string, decision: 'once' | 'always' | 'reject'): Promise<void> {
     await openCodeService.api.permission.reply({ sessionID, requestID, decision })
-    this.pending.delete(`perm:${requestID}`)
+    this.clearPending(`perm:${requestID}`)
     this.audit(sessionID, 'permission', requestID, { decision })
     this.push()
   }
@@ -175,9 +189,14 @@ class InboxManager extends EventEmitter {
         return
       }
       for (const [key, item] of fresh) if (!this.isKnown(item.sessionID)) fresh.delete(key)
+      // A pending item that vanished between connections was answered elsewhere
+      // (other client, terminal); the run it parked must be revived too.
+      const stillBlocked = new Set([...fresh.values()].map((item) => item.sessionID))
+      const freed = [...new Set([...this.pending.values()].map((item) => item.sessionID))].filter((id) => !stillBlocked.has(id))
       this.pending = fresh
       this.recoveredGeneration = generation
       this.push(false)
+      for (const sessionId of freed) this.emit('unblocked', sessionId)
       // Preview tails are fetched after the snapshot is up (resync runs on every
       // connect; message.list per session would slow the initial paint otherwise).
       for (const [key, item] of fresh) this.attachLastMessage(key, item.sessionID)
@@ -273,7 +292,10 @@ class InboxManager extends EventEmitter {
       case 'form.replied':
       case 'form.cancelled': {
         const id = String(data.formID ?? data.id ?? '')
-        if (id && this.pending.delete(`form:${id}`)) this.push()
+        if (id && this.pending.has(`form:${id}`)) {
+          this.clearPending(`form:${id}`)
+          this.push()
+        }
         break
       }
       case 'permission.asked': {
@@ -298,7 +320,10 @@ class InboxManager extends EventEmitter {
       }
       case 'permission.replied': {
         const id = String(data.requestID ?? data.id ?? '')
-        if (id && this.pending.delete(`perm:${id}`)) this.push()
+        if (id && this.pending.has(`perm:${id}`)) {
+          this.clearPending(`perm:${id}`)
+          this.push()
+        }
         break
       }
     }

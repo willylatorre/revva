@@ -190,13 +190,20 @@ class ShipManager {
       audit(workId, 'pushed', work.branch)
 
       // 2. PR: linked already ⇒ the push above updated it — no second PR, ever.
-      if (work.pr_url) {
+      // A pick-up run's branch may carry an open PR this row never recorded; adopt
+      // it rather than let gh hit GitHub's one-open-PR-per-branch refusal.
+      const linkedPr = work.pr_url ?? (await this.openPrForBranch(work))
+      if (linkedPr) {
+        if (linkedPr !== work.pr_url) {
+          getDb().prepare('UPDATE work SET pr_url = ?, updated_at = ? WHERE id = ?').run(linkedPr, Date.now(), workId)
+          audit(workId, 'pr-adopted', linkedPr)
+        }
         const reviews = this.reviewLedger(workId)
-        const jira = await this.syncJira(work, work.pr_url, reviews)
+        const jira = await this.syncJira(work, linkedPr, reviews)
         audit(workId, 'jira-sync', jira)
         getDb().prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(Date.now(), workId)
         workManager.setReviewState(workId, 'SHIPPED')
-        return { prUrl: work.pr_url, alreadyShipped: true }
+        return { prUrl: linkedPr, alreadyShipped: true }
       }
 
       // No PR yet: create one. Stacked work bases on the parent work's branch — this is the
@@ -242,6 +249,26 @@ class ShipManager {
   async pushOnly(worktreeDir: string, branch: string): Promise<void> {
     const push = await this.probe('git', ['-C', worktreeDir, 'push', 'origin', branch])
     if (!push.ok) throw new Error(`git push failed: ${push.err.slice(0, 400)}`)
+  }
+
+  /**
+   * The open PR for the work's branch, when GitHub has one Revva never recorded
+   * (a pick-up run continuing a branch whose earlier round opened the PR). Best
+   * effort: no gh, no auth, or no PR all look the same here.
+   */
+  private async openPrForBranch(work: ShipWorkRow): Promise<string | undefined> {
+    if (!work.branch) return undefined
+    const pr = await this.probeIn(work.worktree_dir, 'gh', [
+      'pr', 'list', '--head', work.branch, '--state', 'open', '--json', 'url', '--limit', '1'
+    ])
+    if (!pr.ok) return undefined
+    try {
+      const rows = JSON.parse(pr.out) as Array<{ url?: string }>
+      const url = rows[0]?.url
+      return url && url.startsWith('http') ? url : undefined
+    } catch {
+      return undefined
+    }
   }
 
   /** AUTO mode: called by the review pipeline the moment all gates approve. */

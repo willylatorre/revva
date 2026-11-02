@@ -220,10 +220,12 @@ class ChatManager {
     }
     getDb()
       .prepare(
-        `INSERT INTO chat(session_id, title, directory, agent_id, provider_id, model_id, ticket_key, pr_url, context, created_at, updated_at)
-         VALUES(?,?,?,?,?,?,?,?,?,?,?)`
+        `INSERT INTO chat(session_id, title, directory, agent_id, provider_id, model_id, ticket_key, pr_url, context, created_at, updated_at, seen_at)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`
       )
-      .run(session.id, title, input.directory, input.agentID ?? null, input.model?.providerID ?? null, input.model?.id ?? null, input.ticketKey ?? null, prUrl ?? null, context, now, now)
+      // seen_at starts at creation time: a chat the user just opened has nothing
+      // to read yet, so it must not surface as a finished-unseen "Message ready" card.
+      .run(session.id, title, input.directory, input.agentID ?? null, input.model?.providerID ?? null, input.model?.id ?? null, input.ticketKey ?? null, prUrl ?? null, context, now, now, now)
     sessionIndex.register(session.id, 'chat')
     // No prompt is sent; opening a conversation remains an empty transcript.
     await coordinator.prepare(session.id).catch((error) => console.warn('[chat] coordinator setup failed:', describeError(error)))
@@ -254,8 +256,8 @@ class ChatManager {
         const dir = typeof s.location?.directory === 'string' ? s.location.directory : ''
         if (!dir) continue
         db.prepare(
-          `INSERT OR IGNORE INTO chat(session_id, title, directory, agent_id, provider_id, model_id, ticket_key, pr_url, created_at, updated_at)
-           VALUES(?,?,?,?,?,?,?,?,?,?)`
+          `INSERT OR IGNORE INTO chat(session_id, title, directory, agent_id, provider_id, model_id, ticket_key, pr_url, created_at, updated_at, seen_at)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?)`
         ).run(
           s.id,
           s.title ?? 'Recovered chat',
@@ -266,6 +268,9 @@ class ChatManager {
           typeof revva.ticketKey === 'string' ? revva.ticketKey : null,
           typeof revva.prUrl === 'string' ? revva.prUrl : null,
           s.time?.created ?? Date.now(),
+          s.time?.updated ?? Date.now(),
+          // A recovered row's history predates this index; treat it as seen so a
+          // restart does not flood the inbox with cards for old conversations.
           s.time?.updated ?? Date.now()
         )
         sessionIndex.register(s.id, workManager.forSession(s.id) ? 'work' : 'chat')

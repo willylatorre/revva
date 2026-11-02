@@ -578,6 +578,13 @@ export const startWorkInputSchema = z.object({
   agentID: z.string().optional(),
   model: modelRefSchema.optional(),
   parentWorkId: z.string().optional(),
+  /** Continue this ticket's in-flight branch instead of starting clean (board pickup). */
+  resumeBranch: z
+    .string()
+    .min(1)
+    .max(200)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._/-]*$/, 'invalid branch name')
+    .optional(),
   grill: z.boolean().default(false),
   /** Also ship automatically in interactive mode; AUTO always ships after approval. */
   shipOnApprove: z.boolean().default(false),
@@ -1060,6 +1067,8 @@ export interface RevvaApi {
     chatReview(input: StartChatReviewInput): Promise<ChatReviewResult>
     /** Retry one reviewer or failed fixer in the latest round. */
     reviewRetry(workId: string, reviewId: number): Promise<void>
+    /** Stop one running reviewer and judge the round from its partial report. */
+    reviewFinishEarly(workId: string, reviewId: number): Promise<void>
     /** Stop reviewers/fixer, including sessions still running after a restart. No deletion. */
     reviewStop(workId: string): Promise<void>
     /** Pre-flight checks for shipping (push/PR/Jira). */

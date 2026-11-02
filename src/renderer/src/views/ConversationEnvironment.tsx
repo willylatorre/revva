@@ -1,22 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, CircleAlert, Info, Loader2, ScanEye } from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
+import { CircleAlert, Info, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitle, PopoverTrigger } from '@/components/ui/popover'
 import { Separator } from '@/components/ui/separator'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import type { WorkSummary } from '@shared/types'
-import { workStateLabels } from '@/lib/work-state'
-import { ReviewPanel, ReviewRerunButton } from './ReviewPanel'
+import { ReviewRerunButton } from './ReviewPanel'
 import { ShipDialog, shipBlockReason } from './ShipPanel'
 import { CommentsStrip } from './CommentsStrip'
-
-// Ready means ready to review, not approved: reserve green for passed/delivered work.
-const workflowVariants = {
-  READY: 'info', BUILDING: 'info', REVIEW: 'info',
-  FIXING: 'warning', REWORK: 'warning', WAITING_HUMAN: 'warning',
-  APPROVED: 'success', SHIPPED: 'success', ABANDONED: 'outline'
-} as const
 
 /** Revva's own lists are pickers, so "leave this alone" needs an option value of its own. */
 const NONE = '__keep__'
@@ -52,19 +44,8 @@ export function ConversationEnvironment({ work, children }: { work?: WorkSummary
 }
 
 export function ConversationActions({ work }: { work: WorkSummary }): React.JSX.Element {
-  const qc = useQueryClient()
-  const [open, setOpen] = useState(false)
   const [shipOpen, setShipOpen] = useState(false)
   const trigger = useRef<HTMLButtonElement>(null)
-  const popup = useRef<HTMLDivElement>(null)
-  const reviews = useQuery({ queryKey: ['reviews', work.id], queryFn: () => window.revva.work.reviews(work.id) })
-  useEffect(() => window.revva.events.on((event) => {
-    if (event.kind === 'review.updated' && event.workId === work.id) qc.setQueryData(['reviews', work.id], event.reviews)
-  }), [qc, work.id])
-  const round = (reviews.data ?? []).reduce((latest, row) => Math.max(latest, row.round), 0)
-  const latest = [...new Map((reviews.data ?? []).filter((row) => row.round === round && row.role !== 'fixer').map((row) => [row.role, row])).values()]
-  const required = latest.filter((row) => row.status !== 'skipped')
-  const approved = required.filter((row) => row.status === 'approved').length
   const running = work.state === 'REVIEW' || work.state === 'FIXING'
   const reviewBlocker = work.state === 'BUILDING' ? 'Wait for the main implementation run to finish before starting review.'
     : work.state === 'REWORK' ? 'Wait for rework to finish before starting review.'
@@ -74,35 +55,40 @@ export function ConversationActions({ work }: { work: WorkSummary }): React.JSX.
     : undefined
   const shippingBlocker = shipBlockReason(work)
   return <>
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger ref={trigger} render={<Button variant={workflowVariants[work.state]} size="sm" className="shrink-0" />}>
-        {running ? <Loader2 data-icon="inline-start" className="animate-spin" /> : work.state === 'WAITING_HUMAN' ? <CircleAlert data-icon="inline-start" /> : <ScanEye data-icon="inline-start" />}
-        <span className="hidden md:inline">Workflow · </span>{workStateLabels[work.state]}
-        <ChevronDown data-icon="inline-end" />
-      </PopoverTrigger>
-      <PopoverContent ref={popup} initialFocus={popup} align="end" className="max-h-[80vh] w-[min(26rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] gap-4 overflow-y-auto p-4">
-        <PopoverHeader>
-          <div className="flex items-center justify-between gap-2">
-            <PopoverTitle>Review &amp; delivery</PopoverTitle>
-            {work.mode === 'auto' && <Badge variant="secondary">Auto</Badge>}
-          </div>
-          <PopoverDescription>{workStateLabels[work.state]}{round ? ` · round ${round}` : ''}</PopoverDescription>
-        </PopoverHeader>
-        {work.blocker && <p role="alert" className="break-words text-sm">{work.blocker}</p>}
-        <p className="text-sm text-muted-foreground">
-          {reviews.isError ? 'Review status unavailable. Reopen Workflow to retry.' : required.length ? `Round ${round}: ${approved} of ${required.length} review gates approved.` : 'Reviews start after implementation is complete.'}
-        </p>
-        <ReviewPanel workId={work.id} state={work.state} auto={work.mode === 'auto'} />
-        <Separator />
-        <div className="flex flex-wrap items-center gap-2">
-          <ReviewRerunButton workId={work.id} disabled={!!reviewBlocker} />
-          {!work.prUrl && <Button size="sm" disabled={!!shippingBlocker} onClick={() => { setOpen(false); setShipOpen(true) }}>{work.state === 'APPROVED' ? 'Ship…' : 'Push / PR…'}</Button>}
-          {work.prUrl && <span className="text-xs text-muted-foreground">Push and PR actions are in the PR menu.</span>}
-        </div>
-        {reviewBlocker && <p className="text-xs text-muted-foreground">{reviewBlocker}</p>}
-        {shippingBlocker && <p className="text-xs text-muted-foreground">{shippingBlocker}</p>}
-      </PopoverContent>
-    </Popover>
+    {/* The reviewer cards and the Agents panel already show progress and hold
+        their own retry/stop controls, so the old Workflow popover only repeated
+        them. What stays are the two entry points nothing else has: a manual
+        full review cycle and shipping. */}
+    {!work.prUrl && (reviewBlocker ? (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="shrink-0"><ReviewRerunButton workId={work.id} disabled /></span>
+        </TooltipTrigger>
+        <TooltipContent>{reviewBlocker}</TooltipContent>
+      </Tooltip>
+    ) : (
+      <ReviewRerunButton workId={work.id} />
+    ))}
+    {!work.prUrl && (shippingBlocker ? (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="shrink-0"><Button size="sm" variant="outline" disabled ref={trigger}>{work.state === 'APPROVED' ? 'Ship…' : 'Push / PR…'}</Button></span>
+        </TooltipTrigger>
+        <TooltipContent>{shippingBlocker}</TooltipContent>
+      </Tooltip>
+    ) : (
+      <Button size="sm" variant="outline" className="shrink-0" ref={trigger} onClick={() => setShipOpen(true)}>
+        {work.state === 'APPROVED' ? 'Ship…' : 'Push / PR…'}
+      </Button>
+    ))}
+    {work.blocker && (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="inline-flex shrink-0 cursor-default items-center text-status-warning"><CircleAlert className="size-4" /></span>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-xs text-[11px]">{work.blocker}</TooltipContent>
+      </Tooltip>
+    )}
     <ShipDialog work={work} open={shipOpen} onClose={() => { setShipOpen(false); trigger.current?.focus() }} />
   </>
 }

@@ -45,6 +45,18 @@ export function jiraTypeClasses(typeName: string): string {
   return HASH_POOL[h % HASH_POOL.length]!
 }
 
+/**
+ * Jira says work on this issue is already underway (In Progress, In Code Review…):
+ * the board's action is to pick the ticket up — continue its existing branch — not
+ * start fresh. Jira's three categories are the truth: anything between To Do and Done.
+ * A feed without a category falls back to the status name.
+ */
+export function isInFlightStatus(statusCategory: string, status?: string): boolean {
+  const cat = statusCategory.toLowerCase().replace(/[\s_-]+/g, '')
+  if (cat) return cat !== 'todo' && cat !== 'new' && cat !== 'done'
+  return !!status && /progress|review|test|verify|block/i.test(status)
+}
+
 export function jiraStatusClasses(status: string, category?: string): string {
   for (const { re, cls } of NAME_CLASSES) if (re.test(status)) return cls
   // board.ts stores the category *name* ("To Do", "In Progress"); some feeds give the *key* ("todo").

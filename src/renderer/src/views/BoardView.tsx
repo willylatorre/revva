@@ -43,7 +43,7 @@ import { CardBoard, CardZone, moveToZone } from '@/components/CardBoard'
 import { MD_COMPONENTS } from '@/components/message-markdown'
 import { useCardOrder } from '@/lib/use-card-order'
 import { cn } from '@/lib/utils'
-import { jiraStatusClasses, jiraTypeClasses } from '@/lib/status-colors'
+import { isInFlightStatus, jiraStatusClasses, jiraTypeClasses } from '@/lib/status-colors'
 import type { Ticket, WorkSummary } from '@shared/types'
 import { StartWorkDialog } from './StartWorkDialog'
 
@@ -504,6 +504,8 @@ function TicketCard({
 }): React.JSX.Element {
   const parentsMissing = t.dependsOn.filter((d) => !boardData.some((x) => x.key === d))
   const parentSummary = t.parentKey ? boardData.find((x) => x.key === t.parentKey)?.summary : undefined
+  /** Jira already shows work underway (In Progress, In Code Review…): the action is pickup. */
+  const inFlight = isInFlightStatus(t.statusCategory, t.status)
   return (
     <div
       data-ticket-key={t.key}
@@ -557,7 +559,7 @@ function TicketCard({
                 </Badge>
               </button>
             </TooltipTrigger>
-            <TooltipContent>Sub-tasks with a Start button on each</TooltipContent>
+            <TooltipContent>Sub-tasks, each ready to pick up</TooltipContent>
           </Tooltip>
         )}
         {t.parentKey && (
@@ -611,15 +613,24 @@ function TicketCard({
       )}
 
       <div className="mt-auto space-y-1.5 border-t pt-1.5">
-        <Button
-          size="sm"
-          variant={active ? 'default' : 'outline'}
-          className={cn('h-7 w-full gap-1.5 text-xs', !active && 'border-primary/40 hover:border-primary/70')}
-          onClick={active ? () => onStartWork(active.id) : onStartTicket}
-        >
-          <Play className="size-3.5" />
-          {active ? (active.state === 'BUILDING' ? 'Watching…' : active.state) : 'Start'}
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              size="sm"
+              variant={active ? 'default' : 'outline'}
+              className={cn('h-7 w-full gap-1.5 text-xs', !active && 'border-primary/40 hover:border-primary/70')}
+              onClick={active ? () => onStartWork(active.id) : onStartTicket}
+            >
+              <Play className="size-3.5" />
+              {active ? (active.state === 'BUILDING' ? 'Watching…' : active.state) : inFlight ? 'Work on this ticket' : 'Start'}
+            </Button>
+          </TooltipTrigger>
+          {inFlight && !active && (
+            <TooltipContent>
+              {t.status} already — this continues the ticket's existing branch instead of starting clean
+            </TooltipContent>
+          )}
+        </Tooltip>
         <Button
           size="sm"
           variant="outline"
@@ -891,8 +902,21 @@ function TicketDetailsDialog({
                       {active.state === 'BUILDING' ? 'Watching…' : active.state}
                     </Button>
                   ) : (
-                    <Button size="xs" className="shrink-0" disabled={done} title={done ? 'Already done' : undefined} onClick={() => onStartSubtask(sub)}>
-                      <Play className="size-3.5" /> Start
+                    <Button
+                      size="xs"
+                      className="shrink-0"
+                      disabled={done}
+                      title={
+                        done
+                          ? 'Already done'
+                          : isInFlightStatus(sub.statusCategory, sub.status)
+                            ? `${sub.status} already — this continues the ticket's existing branch`
+                            : undefined
+                      }
+                      onClick={() => onStartSubtask(sub)}
+                    >
+                      <Play className="size-3.5" />
+                      {isInFlightStatus(sub.statusCategory, sub.status) ? 'Work on this' : 'Start'}
                     </Button>
                   )}
                 </div>

@@ -417,6 +417,10 @@ export function registerIpc(): void {
     if (!Number.isSafeInteger(reviewId) || reviewId < 1) throw new Error('Invalid review ID.')
     return reviewManager.retryReview(String(workId), reviewId)
   })
+  ipcMain.handle(IPC.workReviewFinishEarly, (_e, workId: string, reviewId: number) => {
+    if (!Number.isSafeInteger(reviewId) || reviewId < 1) throw new Error('Invalid review ID.')
+    return reviewManager.finishReviewEarly(String(workId), reviewId)
+  })
   ipcMain.handle(IPC.workShipCheck, (_e, workId: string) => shipManager.checks(String(workId)))
   ipcMain.handle(IPC.workShip, (_e, workId: string) => shipManager.ship(String(workId)))
 

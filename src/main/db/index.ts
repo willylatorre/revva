@@ -180,6 +180,12 @@ function migrate(db: Database.Database): void {
       PRAGMA user_version = 11;
     `)
   }
+  if (version < 12) {
+    // Chat rows created before the fix carried seen_at NULL, which the triage
+    // feed reads as finished-unseen — fresh chats flooded the inbox with empty
+    // "Message ready" cards. Treat existing rows as last-seen now.
+    db.exec('UPDATE chat SET seen_at = updated_at WHERE seen_at IS NULL; PRAGMA user_version = 12;')
+  }
 }
 
 function addColumnIfMissing(db: Database.Database, table: string, column: string, decl: string): boolean {

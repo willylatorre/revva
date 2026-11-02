@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { FolderOpen, Rocket, MessageCircleQuestion } from 'lucide-react'
+import { FolderOpen, Rocket, MessageCircleQuestion, GitBranch } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -23,6 +23,8 @@ import {
   SelectValue
 } from '@/components/ui/select'
 import type { Ticket, WorkSummary, PipelineRole } from '@shared/types'
+import { ticketKeyFromText } from '@shared/ticket-key'
+import { isInFlightStatus } from '@/lib/status-colors'
 import { modelKeyOf, parseModelKey } from './NewChatDialog'
 import { RoleSelectors, DEFAULT, selOrUndefined } from './RoleSelectors'
 
@@ -48,7 +50,10 @@ export function StartWorkDialog({
 
   const [workspaceId, setWorkspaceId] = useState('')
   const [repoDir, setRepoDir] = useState('')
-  const [auto, setAuto] = useState(false)
+  /** Pick-up mode: continue this ticket's existing branch instead of a clean start. */
+  const inFlight = isInFlightStatus(ticket.statusCategory, ticket.status)
+  const [resumeChoice, setResumeChoice] = useState<string | undefined>()
+  const [auto, setAuto] = useState(inFlight)
   const [grill, setGrill] = useState(false)
   const [shipOnApprove, setShipOnApprove] = useState(false)
   const [agentID, setAgentID] = useState('__default__')
@@ -78,6 +83,27 @@ export function StartWorkDialog({
     return { path, previous, matches }
   }).sort((a, b) => Number(b.previous) - Number(a.previous) || b.matches.length - a.matches.length || a.path.localeCompare(b.path))
 
+  // Pick-up: branches of the selected repository that carry this ticket — Revva's
+  // own slug branch or any branch whose name holds the ticket key. An in-flight
+  // ticket (In Progress, In Code Review…) defaults to continuing its branch.
+  const branches = useQuery({
+    queryKey: ['worktree-branches', selectedRepo ?? null],
+    queryFn: () => window.revva.worktrees.branches({ directory: selectedRepo! }),
+    enabled: !!selectedRepo,
+    staleTime: 0
+  })
+  const ownSlug = `revva/${ticket.key.toLowerCase()}`
+  /** Git allows one checkout per branch, so an occupied branch is shown but not selectable. */
+  const free = (b: { checkedOutIn?: string; current: boolean }): boolean => !b.checkedOutIn && !b.current
+  const pickups = (branches.data?.branches ?? [])
+    .filter((b) => b.name === ownSlug || ticketKeyFromText(b.name) === ticket.key)
+    .sort((a, b) => Number(free(b)) - Number(free(a)) || Number(b.name === ownSlug) - Number(a.name === ownSlug) || a.name.localeCompare(b.name))
+  const resumeBranch = inFlight
+    ? resumeChoice === '__none__'
+      ? undefined
+      : resumeChoice ?? pickups.find(free)?.name
+    : undefined
+
   // Suggest a stacked parent only when it belongs to the selected repository.
   const suggestedParent = works.find(
     (w) => w.repoDir === selectedRepo && ticket.dependsOn.includes(w.ticketKey) && w.state !== 'ABANDONED'
@@ -104,13 +130,17 @@ export function StartWorkDialog({
       const dir = selectedRepo
       if (!dir) throw new Error('Choose a repository first.')
       if (!validParent) throw new Error('Choose a parent from the selected repository.')
+      if (resumeBranch && !pickups.some((b) => b.name === resumeBranch)) {
+        throw new Error(`${resumeBranch} is no longer available in this repository. Pick another branch or start clean.`)
+      }
       const work = await window.revva.work.start({
         ticketKey: ticket.key,
         repoDir: dir,
         mode: auto ? 'auto' : 'interactive',
         agentID: agentID === '__default__' ? undefined : agentID,
         model: modelKey === '__default__' ? undefined : parseModelKey(modelKey),
-        parentWorkId: parentWorkId === '__none__' ? undefined : parentWorkId,
+        parentWorkId: resumeBranch || parentWorkId === '__none__' ? undefined : parentWorkId,
+        resumeBranch,
         grill,
         shipOnApprove: auto || shipOnApprove,
         reviewSel: {
@@ -125,7 +155,12 @@ export function StartWorkDialog({
     onSuccess: onStarted
   })
 
-  const hasRepo = !!selectedRepo && validParent && !repositories.isFetching && !repositories.isError
+  const hasRepo =
+    !!selectedRepo &&
+    validParent &&
+    !repositories.isFetching &&
+    !repositories.isError &&
+    !(inFlight && branches.isPending)
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -133,7 +168,7 @@ export function StartWorkDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <span className="font-mono">{ticket.key}</span>
-            <span className="font-normal text-muted-foreground">Start work</span>
+            <span className="font-normal text-muted-foreground">{inFlight ? 'Work on this ticket' : 'Start work'}</span>
           </DialogTitle>
           <DialogDescription>{ticket.summary}</DialogDescription>
         </DialogHeader>
@@ -155,7 +190,7 @@ export function StartWorkDialog({
                 {addFolder.isPending ? 'Choosing folder…' : 'Choose a workspace folder…'}
               </Button>
             ) : (
-              <Select value={workspace?.id ?? ''} onValueChange={(v) => { setWorkspaceId(v); setRepoDir(''); setParentChoice(undefined) }}>
+              <Select value={workspace?.id ?? ''} onValueChange={(v) => { setWorkspaceId(v); setRepoDir(''); setParentChoice(undefined); setResumeChoice(undefined) }}>
                 <SelectTrigger id="work-workspace" size="sm" className="w-full">
                   <SelectValue placeholder="Choose a workspace…" />
                 </SelectTrigger>
@@ -180,7 +215,7 @@ export function StartWorkDialog({
 
           <div className="space-y-1.5">
             <Label htmlFor="work-repository">Repository</Label>
-            <Select value={selectedRepo ?? ''} onValueChange={(v) => { setRepoDir(v); setParentChoice(undefined) }} disabled={!paths.length || repositories.isFetching}>
+            <Select value={selectedRepo ?? ''} onValueChange={(v) => { setRepoDir(v); setParentChoice(undefined); setResumeChoice(undefined) }} disabled={!paths.length || repositories.isFetching}>
               <SelectTrigger id="work-repository" size="sm" className="w-full">
                 <SelectValue placeholder={repositories.isFetching ? 'Finding repositories…' : 'Choose a repository…'} />
               </SelectTrigger>
@@ -200,7 +235,58 @@ export function StartWorkDialog({
             {paths.length > 1 && <p className="text-xs text-muted-foreground">Choose a repository. Suggestions use prior ticket work and name matches, not a guarantee.</p>}
           </div>
 
-          {ticket.dependsOn.length > 0 && (
+          {inFlight && (
+            <div className="space-y-1.5 rounded-md border border-violet-500/40 bg-violet-500/[0.04] p-3">
+              <div className="flex items-center justify-between">
+                <Label className="flex items-center gap-1.5">
+                  <GitBranch className="size-3.5" /> Continue existing branch
+                </Label>
+                {resumeBranch && <Badge variant="secondary" className="text-[10px]">{ticket.status}</Badge>}
+              </div>
+              {!selectedRepo || branches.isPending ? (
+                <p className="text-[11px] text-muted-foreground">Choose the repository — revva looks for the branch this ticket is already on.</p>
+              ) : branches.isError ? (
+                <p className="text-[11px] text-destructive">
+                  Git could not read this repository’s branches — this starts clean work as before.
+                </p>
+              ) : pickups.length === 0 ? (
+                <p className="text-[11px] text-muted-foreground">
+                  No branch for {ticket.key} found in this repository — this starts clean work as before.
+                </p>
+              ) : (
+                <>
+                  <Select
+                    value={resumeBranch ?? '__none__'}
+                    onValueChange={(v) => setResumeChoice(v === '__none__' ? '__none__' : (v ?? '__none__'))}
+                  >
+                    <SelectTrigger size="sm" className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {pickups.map((b) => (
+                        <SelectItem
+                          key={b.name}
+                          value={b.name}
+                          disabled={!free(b)}
+                          title={!free(b) ? `Checked out in ${b.checkedOutIn ?? 'a live worktree'} — git allows one checkout per branch` : undefined}
+                          className="font-mono text-xs"
+                        >
+                          {b.name}
+                          {b.remoteOnly ? ` · on ${b.remote ?? 'a remote'}` : !free(b) ? ' · checked out elsewhere' : ''}
+                        </SelectItem>
+                      ))}
+                      <SelectItem value="__none__">Start clean from the default branch instead</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-[11px] text-muted-foreground">
+                    The build continues this branch — its earlier commits stay, the review gates judge the branch's diff, and shipping pushes to the branch's existing PR or opens one.
+                  </p>
+                </>
+              )}
+            </div>
+          )}
+
+          {ticket.dependsOn.length > 0 && !resumeBranch && (
             <div className="space-y-1.5 rounded-md border border-dashed p-3">
               <div className="flex items-center justify-between">
                 <Label>Stack on parent work</Label>

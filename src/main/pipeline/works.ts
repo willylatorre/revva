@@ -15,6 +15,7 @@ import { join, basename, dirname, resolve } from 'node:path'
 import { BrowserWindow } from 'electron'
 import { openCodeService, describeError } from '../opencode/service'
 import { eventBus, type RawEvent } from '../opencode/bus'
+import { inboxManager } from '../opencode/inbox'
 import { getTicket } from '../jira/board'
 import { getDb, settingGet } from '../db'
 import { sessionIndex } from '../opencode/session-index'
@@ -29,7 +30,7 @@ import { shipManager } from '../ship'
 import { throughputMeter } from '../opencode/throughput'
 import { performRemoval, preflightWorktreeRemoval, probeActiveAgentsInside, requireAbsenceOfAgents, staleConfirmationError } from '../worktree-safety'
 import { checkoutBranch, listRepoBranches, probeCheckout } from '../branches'
-import { renderPrompt, DEFAULT_START_PROMPT, BUILD_COMPLETION_INSTRUCTIONS } from '@shared/prompts'
+import { renderPrompt, DEFAULT_START_PROMPT, BUILD_COMPLETION_INSTRUCTIONS, RESUME_NOTE } from '@shared/prompts'
 import {
   IPC,
   type ChatReviewResult,
@@ -139,6 +140,9 @@ class WorkManager {
     })
     eventBus.on('stream:reconnect', () => void this.healDeadSessions())
     eventBus.on('event', (e: RawEvent) => this.onEvent(e))
+    // The inbox parks a BUILDING run as blocker-less WAITING_HUMAN while a question
+    // waits; answering it must revive the build (see resumeAfterAnswer).
+    inboxManager.on('unblocked', (sessionId: string) => this.resumeAfterAnswer(sessionId))
   }
 
   list(): WorkSummary[] {
@@ -657,7 +661,11 @@ class WorkManager {
     const ticket = await getTicket(input.ticketKey)
     if (!ticket) throw new Error(`Ticket ${input.ticketKey} not found. Refresh the board first.`)
 
-    // Parent (stacked) work → branch base.
+    // Parent (stacked) work → branch base. A pick-up continues its own branch tip,
+    // so it cannot also stack on a parent's branch.
+    if (input.resumeBranch && input.parentWorkId) {
+      throw new Error('Picking up an existing branch continues that branch; it cannot also stack on a parent work.')
+    }
     let baseRef: string | undefined
     if (input.parentWorkId) {
       const parent = getDb().prepare('SELECT * FROM work WHERE id = ?').get(input.parentWorkId) as WorkRow | undefined
@@ -670,8 +678,12 @@ class WorkManager {
     }
 
     const id = randomUUID()
-    const branch = slugBranch(ticket.key)
-    const worktreeDir = await this.createWorktree(input.repoDir, branch, baseRef)
+    // Pick-up continues the ticket's existing branch (its tip is the base); a clean
+    // start uses the ticket's slug branch created from the base. Any open PR on the
+    // branch is found at ship time, so the work row stays exactly like a fresh run.
+    const branch = input.resumeBranch ?? slugBranch(ticket.key)
+
+    const worktreeDir = await this.createWorktree(input.repoDir, branch, baseRef, !!input.resumeBranch)
 
     const state: WorkState = 'BUILDING'
     const now = Date.now()
@@ -711,9 +723,9 @@ class WorkManager {
       })
       getDb().prepare('UPDATE work SET session_id = ? WHERE id = ?').run(session.id, id)
       // A started ticket is also an ordinary conversation with ticket properties.
-      getDb().prepare(`INSERT INTO chat(session_id, title, directory, agent_id, provider_id, model_id, ticket_key, created_at, updated_at)
-        VALUES(?,?,?,?,?,?,?,?,?)`)
-        .run(session.id, `${ticket.key}: ${ticket.summary}`, worktreeDir, input.agentID ?? null, input.model?.providerID ?? null, input.model?.id ?? null, ticket.key, now, now)
+      getDb().prepare(`INSERT INTO chat(session_id, title, directory, agent_id, provider_id, model_id, ticket_key, created_at, updated_at, seen_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?)`)
+        .run(session.id, `${ticket.key}: ${ticket.summary}`, worktreeDir, input.agentID ?? null, input.model?.providerID ?? null, input.model?.id ?? null, ticket.key, now, now, now)
       sessionIndex.register(session.id, 'work')
       await coordinator.prepare(session.id).catch((error) => console.warn('[work] coordinator setup failed:', describeError(error)))
 
@@ -756,6 +768,9 @@ class WorkManager {
     return [
       core,
       '',
+      ...(input.resumeBranch
+        ? [renderPrompt(RESUME_NOTE, { ticketKey: ticketKey }), '']
+        : []),
       ...(input.grill
         ? [
             'First use the grill-me skill to interrogate this ticket and sharpen the plan,',
@@ -765,7 +780,7 @@ class WorkManager {
         : []),
       // Structural pipeline facts — not stylistic, always appended.
       `Pipeline context (Revva):`,
-      '- You are in a dedicated git worktree on branch ' + slugBranch(ticketKey) + '.',
+      '- You are in a dedicated git worktree on branch ' + (input.resumeBranch ?? slugBranch(ticketKey)) + '.',
       '- Commit your work with clear messages referencing ' + ticketKey + '. Do not push, do not open PRs — Revva ships after review.',
       BUILD_COMPLETION_INSTRUCTIONS,
       ...modeLines
@@ -778,8 +793,11 @@ class WorkManager {
    * (revva's pid+uuid), the branch is (re)pointed at the base, only then checked
    * out and unlocked. A crashed create leaves a locked, identifiable worktree.
    * Same-branch reruns adopt the existing branch; a taken directory gets a suffix.
+   * `resume` (a pick-up run) requires the branch to exist and keeps its tip — it
+   * never creates a branch or repoints one, and skips the service path so that
+   * contract is enforced by plain git.
    */
-  private async createWorktree(repoDir: string, branch: string, baseRef?: string): Promise<string> {
+  private async createWorktree(repoDir: string, branch: string, baseRef?: string, resume = false): Promise<string> {
     const root = settingGet<string>('worktreeRoot') || join(repoDir, '..', `${basename(repoDir)}-worktrees`)
     const name = branch.replace(/\//g, '-')
 
@@ -792,24 +810,37 @@ class WorkManager {
     }
     const baseHead = (await exec('git', ['-C', repoDir, 'rev-parse', base])).stdout.trim()
     const branchExists = await refExists(repoDir, `refs/heads/${branch}`)
+    // A pick-up can also continue a branch that only exists on a remote (its local
+    // branch was cleaned up); exactly one remote must carry it or git would guess.
+    const remoteCandidates = resume && !branchExists ? await remoteBranchesFor(repoDir, branch) : []
+    if (resume && !branchExists && remoteCandidates.length !== 1) {
+      throw new Error(
+        remoteCandidates.length > 1
+          ? `${branch} exists on ${remoteCandidates.length} remotes (${remoteCandidates.map((r) => r.split('/')[0]).join(', ')}). Revva will not guess which one — nothing was created.`
+          : `Branch ${branch} does not exist in ${repoDir}, so there is nothing to pick up. Nothing was created.`
+      )
+    }
+    const remoteBranch = remoteCandidates[0]
     let serviceDir: string | undefined
 
-    // Prefer the service-managed worktree API.
-    try {
-      const api = openCodeService.api
-      const projects = await api.project.list({})
-      const project = projects.find((p) => p.canonical === repoDir)
-      if (project) {
-        const info = await api.worktree.create({
-          projectID: project.id,
-          name,
-          branch,
-          from: baseHead
-        })
-        serviceDir = info.directory
+    // Prefer the service-managed worktree API (pick-up runs use plain git instead).
+    if (!resume) {
+      try {
+        const api = openCodeService.api
+        const projects = await api.project.list({})
+        const project = projects.find((p) => p.canonical === repoDir)
+        if (project) {
+          const info = await api.worktree.create({
+            projectID: project.id,
+            name,
+            branch,
+            from: baseHead
+          })
+          serviceDir = info.directory
+        }
+      } catch {
+        // fall through to git
       }
-    } catch {
-      // fall through to git
     }
 
     if (serviceDir) {
@@ -830,16 +861,20 @@ class WorkManager {
     for (let i = 2; existsSync(target); i++) target = join(root, `${name}-${i}`)
 
     const receipt = `revva-create:${process.pid}:${randomUUID()}`
-    // Existing branch (rerun after a crashed/removed worktree): adopt it as-is rather
-    // than fail or reset — its commits are the point. Same policy as a taken directory.
+    // Existing branch (rerun after a crashed/removed worktree, or a pick-up): adopt
+    // it as-is rather than fail or reset — its commits are the point. Same policy as
+    // a taken directory.
     try {
       // Phase 1: locked, detached, no checkout — ours by receipt alone; branch untouched.
       await exec('git', [
         '-C', repoDir, 'worktree', 'add', '--detach', '--no-checkout', '--lock', '--reason', receipt, target, base
       ], { timeout: 120_000 })
-      // Phase 2: attach the branch (created fresh at base, or adopted), record lineage, release.
+      // Phase 2: attach the branch (created fresh at base, adopted, or started as a
+      // tracking branch from the one remote that carries it), record lineage, release.
       if (branchExists) {
         await exec('git', ['-C', target, 'checkout', branch], { timeout: 120_000 })
+      } else if (remoteBranch) {
+        await exec('git', ['-C', target, 'checkout', '--track', remoteBranch], { timeout: 120_000 })
       } else {
         await exec('git', ['-C', target, 'checkout', '-b', branch, base], { timeout: 120_000 })
       }
@@ -907,29 +942,51 @@ class WorkManager {
       return
     }
     // Detail is routed by the shared bus, without a SQLite read per token.
-    if (!['session.execution.started', 'session.execution.succeeded', 'session.execution.failed', 'session.execution.interrupted'].includes(e.type)) return
+    if (!['session.execution.started', 'session.execution.succeeded', 'session.execution.failed', 'session.execution.interrupted', 'session.status'].includes(e.type)) return
     if (typeof sessionId !== 'string') return
     // Fast miss on the index: chat/reviewer sessions never touch SQLite here.
     if (sessionIndex.kindOf(sessionId) !== 'work') return
     const work = this.workBySession(sessionId)
     if (!work) return
 
+    if (e.type === 'session.status') {
+      // A resumed-after-answer execution announces itself as busy before anything
+      // else; the inbox's silent question park must stop claiming "needs you" then.
+      const status = (e.data as { status?: { type?: string } } | undefined)?.status
+      if (status?.type === 'busy' && work.state === 'WAITING_HUMAN' && !work.blocker) this.setState(work.id, 'BUILDING')
+      return
+    }
     switch (e.type) {
       case 'session.execution.started': {
         this.buildRevisions.set(sessionId, (this.buildRevisions.get(sessionId) ?? 0) + 1)
-        if (work.owns_worktree === 0 && work.state !== 'BUILDING') this.setState(work.id, 'BUILDING')
+        // A new execution washes out every "waiting" claim: the inbox's silent
+        // question park and stale failure wording alike — the run is working, the
+        // chip must say so. Revva's own prompt path already sets BUILDING before
+        // submission; this catches resumes and runs started from another client.
+        if (work.state === 'WAITING_HUMAN' || (work.owns_worktree === 0 && work.state !== 'BUILDING')) {
+          this.setState(work.id, 'BUILDING')
+        }
         break
       }
       case 'session.execution.succeeded': {
-        if (work.state !== 'BUILDING') return
+        // Answering an agent question resumes the interrupted execution WITHOUT a
+        // new "started" event, so the row can still sit in the inbox's silent park
+        // when the run completes. Without this revival the completion is swallowed
+        // on the next line and AUTO silently never reaches review.
+        const questionRun = work.state === 'WAITING_HUMAN' && !work.blocker
+        if (!questionRun && work.state !== 'BUILDING') return
         streamBuffer.flush(sessionId)
+        if (questionRun) this.setState(work.id, 'BUILDING')
         void this.finishBuildTurn(work, this.buildRevisions.get(sessionId) ?? 0)
         break
       }
       case 'session.execution.failed':
       case 'session.execution.interrupted': {
         streamBuffer.flush(sessionId)
-        if (work.state === 'BUILDING') {
+        // A parked run whose session died (or died rejecting the answer) must say
+        // so honestly, not keep the inbox's silent park.
+        const questionRun = work.state === 'WAITING_HUMAN' && !work.blocker
+        if (work.state === 'BUILDING' || questionRun) {
           this.setState(
             work.id,
             'WAITING_HUMAN',
@@ -941,6 +998,34 @@ class WorkManager {
         break
       }
     }
+  }
+
+  /**
+   * The inbox parks a building run in blocker-less WAITING_HUMAN while an agent
+   * question is pending (markSessionWaiting). Answering it resumes the interrupted
+   * execution — the agent is working again, so the chip that still shouts "needs
+   * you" for the rest of the turn is the bug this clears. Only a session the
+   * service confirms is running gets resumed; a run that truly died while asking
+   * keeps "needs you" honestly, and its terminal events settle the wording.
+   */
+  private resumeAfterAnswer(sessionId: string): void {
+    const work = this.workBySession(sessionId)
+    // Only the inbox's silent park is revivable: a real blocker is the human's to
+    // clear, and every other state has its own event path.
+    if (!work || work.state !== 'WAITING_HUMAN' || work.blocker) return
+    void this.probeAnswerResume(sessionId, 0)
+  }
+
+  private async probeAnswerResume(sessionId: string, attempt: number): Promise<void> {
+    const work = this.workBySession(sessionId)
+    if (!work || work.state !== 'WAITING_HUMAN' || work.blocker) return
+    const active = await openCodeService.api.session.active().catch(() => null)
+    if (active && sessionId in active) {
+      this.setState(work.id, 'BUILDING')
+      return
+    }
+    // The resumed execution can register as active a moment after the answer lands.
+    if (attempt < 2) setTimeout(() => void this.probeAnswerResume(sessionId, attempt + 1), 1_500)
   }
 
   /** A successful prompt execution can be a refusal or a planning pause. */
@@ -1364,6 +1449,27 @@ class WorkManager {
   private touch(id: string): void {
     getDb().prepare('UPDATE work SET updated_at = ? WHERE id = ?').run(Date.now(), id)
   }
+}
+
+/** Remote-tracking branches carrying `branch` (as `<remote>/<branch>`), fetched when none are known locally. */
+async function remoteBranchesFor(repoDir: string, branch: string): Promise<string[]> {
+  const list = async (): Promise<string[]> => {
+    // for-each-ref patterns are prefixes, not globs — match the exact <remote>/<branch>
+    // shape so `origin/feature/main` never answers a pick-up of `main`.
+    const { stdout } = await exec('git', ['-C', repoDir, 'for-each-ref', '--format=%(refname)', 'refs/remotes']).catch(() => ({ stdout: '' }))
+    const names: string[] = []
+    for (const ref of stdout.split('\n').filter(Boolean)) {
+      const rest = ref.slice('refs/remotes/'.length)
+      const slash = rest.indexOf('/')
+      if (slash <= 0 || rest.slice(slash + 1) !== branch) continue
+      names.push(rest)
+    }
+    return names
+  }
+  const names = await list()
+  if (names.length) return names
+  await exec('git', ['-C', repoDir, 'fetch', '--all', '--prune'], { timeout: 120_000 }).catch(() => undefined)
+  return list()
 }
 
 async function refExists(repoDir: string, ref: string): Promise<boolean> {

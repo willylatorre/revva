@@ -63,6 +63,11 @@ Revva implementation phase:
 - Only when the ticket is fully implemented, verified according to repo policy, and committed, end your final message with exactly REVVA: DONE on its own last line.
 - If blocked, missing a dependency/plugin, asking a question, or only presenting a plan, explain what is needed and do NOT emit REVVA: DONE. Ending a turn alone does not start review.`
 
+/** Prepended when a run picks up the ticket's in-flight branch instead of starting clean. */
+export const RESUME_NOTE = `Pick-up mode (Revva): this run continues an existing branch that already carries work for {ticketKey}.
+- The earlier commits are part of this ticket — read them before changing anything (\`git log --oneline <base>..HEAD\` and the existing diff).
+- Continue from what exists. Do not restart the implementation from scratch, and do not rewrite or squash the existing commits unless the ticket demands it.`
+
 /** Replace {known} placeholders; unknown ones are left untouched so typos stay visible. */
 export function renderPrompt(template: string, vars: Record<string, string>): string {
   return template.replace(/\{(\w+)\}/g, (m, key: string) => (key in vars ? vars[key]! : m))

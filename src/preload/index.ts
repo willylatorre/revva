@@ -105,6 +105,7 @@ const api: RevvaApi = {
     reviewStart: (workId) => ipcRenderer.invoke(IPC.workReviewStart, workId),
   chatReview: (input) => ipcRenderer.invoke(IPC.workChatReview, input),
     reviewRetry: (workId, reviewId) => ipcRenderer.invoke(IPC.workReviewRetry, workId, reviewId),
+    reviewFinishEarly: (workId, reviewId) => ipcRenderer.invoke(IPC.workReviewFinishEarly, workId, reviewId),
     reviewStop: (workId) => ipcRenderer.invoke(IPC.workReviewStop, workId),
     shipCheck: (workId) => ipcRenderer.invoke(IPC.workShipCheck, workId),
     ship: (workId) => ipcRenderer.invoke(IPC.workShip, workId)
