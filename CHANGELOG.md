@@ -7,6 +7,10 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
+- (nothing yet)
+
+## [1.8.0] - 2026-11-03
+
 - **Revva now finds OpenCode V2 by itself, and says plainly when only V1 is installed** — a V1 `opencode` on PATH used to fail with the opaque `Server process exited with code 1`, because V1 has no `serve --service` flag. Revva now asks each candidate for its version and drives the first V2 (or newer) it finds, so a V2 installed beside V1 as `opencode2` (or `opencode-v2`) works without renaming anything. When only V1 answers, Setup and the connection popover say that V1 is not supported and that Revva needs V2, instead of showing an exit code. The service also refuses to attach to an already-registered V1 endpoint. Because a second V2 install usually keeps its own state directory, Revva asks V2 where it registers (`debug paths`) instead of assuming its pinned path, so a wrapper that sets its own `XDG_STATE_HOME` still connects.
 
 ## [1.7.1] - 2026-11-03
