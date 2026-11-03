@@ -61,6 +61,7 @@ export function setChoice(next: ToolchainChoice): void {
   // Every cached derivation belongs to the previous environment.
   resolved.clear()
   mountRoots.clear()
+  nativeShims.clear()
   distroList = undefined
   defaultDistroName = ''
 }
@@ -229,6 +230,62 @@ export async function resolveTool(name: string): Promise<string | undefined> {
   return found
 }
 
+/* ---------------- opencode V2 discovery ---------------- */
+
+/**
+ * Command names Revva tries, in order, for the OpenCode service. OpenCode V1
+ * and V2 cannot share one state directory, so V2 is commonly installed beside
+ * V1 under its own name. Revva only ever drives V2 and never rewrites a user's
+ * config, so an alias is all it needs.
+ */
+export const OPENCODE_CANDIDATES = ['opencode', 'opencode2', 'opencode-v2'] as const
+
+/** Marker for the V1-only case, so the caller can say so instead of "not found". */
+export const V1_ONLY = 'v1-only'
+
+/**
+ * V2 prints `opencode v2.2.1`; V1 prints a bare `1.18.32`. V2 also ships
+ * channel builds that report `0.0.0-dev-<n>` (likewise `beta`, `next`), so a
+ * prerelease suffix counts as supported even though its major is 0.
+ */
+export function isSupportedVersion(output: string): boolean {
+  const match = output.match(/(\d+)\.\d+\.\d+(?:-([0-9A-Za-z.-]+))?/)
+  if (!match) return false
+  if (match[2] !== undefined && match[2].length > 1) return true
+  return Number(match[1]) >= 2
+}
+
+/**
+ * The OpenCode command to drive: the first candidate whose `--version` reports
+ * V2 or newer. `undefined` means nothing usable was found, `V1_ONLY` means V1
+ * answered but no supported version exists in this environment.
+ */
+export async function resolveOpenCode(): Promise<string | undefined | typeof V1_ONLY> {
+  const c = choice()
+  const key = `opencode-v2\u0000${c.kind === 'wsl' ? c.distro : c.kind}`
+  if (resolved.has(key)) return resolved.get(key)
+  let sawV1 = false
+  for (const candidate of OPENCODE_CANDIDATES) {
+    const version = await openCodeVersion(candidate)
+    if (version === undefined) continue
+    if (isSupportedVersion(version)) {
+      resolved.set(key, candidate)
+      return candidate
+    }
+    sawV1 = true
+  }
+  const result = sawV1 ? V1_ONLY : undefined
+  resolved.set(key, result)
+  return result
+}
+
+/** `--version` output for one command name, or undefined when it cannot run. */
+async function openCodeVersion(command: string): Promise<string | undefined> {
+  const spec = await spawnSpec(command, ['--version'])
+  const res = await runSpec(spec)
+  return res.ok ? res.out.trim() : undefined
+}
+
 /* ---------------- spawning ---------------- */
 
 export interface SpawnSpec {
@@ -303,7 +360,9 @@ const nativeShims = new Map<string, string | undefined>()
 
 /** Absolute path of a native `opencode.cmd`/`.bat` shim, when there is no `.exe`. */
 async function nativeShim(tool: string): Promise<string | undefined> {
-  if (!isWindows || tool !== 'opencode') return undefined
+  // `gh` and `git` ship as real `.exe` files and their arguments carry prose,
+  // so only OpenCode commands may go through cmd.exe.
+  if (!isWindows || !tool.startsWith('opencode')) return undefined
   if (nativeShims.has(tool)) return nativeShims.get(tool)
   const res = await runNative('where.exe', [tool])
   const found = res.out.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
@@ -435,6 +494,7 @@ export async function probeToolchain(): Promise<ToolchainProbe> {
 async function probeTool(name: 'gh' | 'opencode' | 'git'): Promise<ToolchainProbe['tools'][number]> {
   const c = choice()
   try {
+    if (name === 'opencode') return await probeOpenCode()
     if (c.kind === 'native') {
       // On Windows `where.exe` finds `.exe`, `.cmd` and `.bat` shims alike.
       const res = isWindows
@@ -456,6 +516,26 @@ async function probeTool(name: 'gh' | 'opencode' | 'git'): Promise<ToolchainProb
   }
 }
 
+/**
+ * The `opencode` row reports the command Revva will actually drive. A V1
+ * install is shown as a failure here, because Revva cannot use it even though
+ * the binary answers `--version`.
+ */
+async function probeOpenCode(): Promise<ToolchainProbe['tools'][number]> {
+  const found = await resolveOpenCode()
+  if (!found) return { name: 'opencode', ok: false, detail: 'not found in this environment' }
+  if (found === V1_ONLY) {
+    const version = await openCodeVersion('opencode')
+    return {
+      name: 'opencode',
+      ok: false,
+      detail: `V1${version ? ` ${version}` : ''} is not supported — Revva needs OpenCode V2`
+    }
+  }
+  const version = await openCodeVersion(found)
+  return { name: 'opencode', ok: true, detail: [found, version].filter(Boolean).join(' — ') }
+}
+
 function runNative(file: string, args: string[]): Promise<{ ok: boolean; out: string; err: string }> {
   return new Promise((resolve) => {
     execFile(file, args, { timeout: 10_000, windowsHide: true, maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
@@ -470,13 +550,18 @@ function runNative(file: string, args: string[]): Promise<{ ok: boolean; out: st
 
 function runSpec(spec: SpawnSpec): Promise<{ ok: boolean; out: string; err: string }> {
   return new Promise((resolve) => {
-    execFile(spec.file, spec.args, { timeout: 20_000, windowsHide: true, maxBuffer: 4 * 1024 * 1024, env: process.env }, (err, stdout, stderr) => {
-      resolve({
-        ok: !err,
-        out: typeof stdout === 'string' ? stdout : String(stdout ?? ''),
-        err: (typeof stderr === 'string' ? stderr : String(stderr ?? '')) || (err ? err.message : '')
-      })
-    })
+    execFile(
+      spec.file,
+      spec.args,
+      { timeout: 20_000, windowsHide: true, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, ...spec.env } },
+      (err, stdout, stderr) => {
+        resolve({
+          ok: !err,
+          out: typeof stdout === 'string' ? stdout : String(stdout ?? ''),
+          err: (typeof stderr === 'string' ? stderr : String(stderr ?? '')) || (err ? err.message : '')
+        })
+      }
+    )
   })
 }
 
@@ -507,17 +592,62 @@ export async function serviceStateEnv(userDataDir: string): Promise<Record<strin
   return { XDG_STATE_HOME: toToolPath(join(userDataDir, 'opencode-state')) }
 }
 
-/** Whether `opencode` is reachable in the chosen environment. */
-export async function openCodeAvailable(): Promise<{ ok: boolean; detail: string }> {
+/**
+ * Where the resolved OpenCode command will register its service.
+ *
+ * A wrapper that owns its own state directory (a second V2 install beside V1,
+ * for example) overrides `XDG_STATE_HOME`, so the pinned path would miss the
+ * registration file. V2 answers `debug paths` with its real directories, so ask
+ * it instead of assuming. The pinned path remains the fallback for a V2 build
+ * that does not expose `debug paths`.
+ */
+export async function serviceRegistrationFile(
+  userDataDir: string,
+  command: string,
+  env: Record<string, string> = {}
+): Promise<string | undefined> {
   const c = choice()
-  if (c.kind === 'native') return { ok: true, detail: '' }
-  const found = await resolveTool('opencode')
-  if (found) return { ok: true, detail: found }
+  if (c.kind === 'wsl') await primePaths()
+  // A custom prefix gets no path translation, so a Linux path from `debug paths`
+  // could not be opened from Windows. Keep the previous default-registration
+  // behaviour for that escape hatch rather than pass an unusable path.
+  if (c.kind === 'custom') return serviceStateFile(userDataDir).file
+  const stateDir = await openCodeStateDir(command, env)
+  if (stateDir) {
+    const windows = c.kind === 'wsl' ? fromToolPath(stateDir) : stateDir
+    if (windows) return join(windows, 'service.json')
+  }
+  return serviceStateFile(userDataDir).file
+}
+
+/** The `state` line of `opencode debug paths`, or undefined when it cannot run. */
+async function openCodeStateDir(command: string, env: Record<string, string>): Promise<string | undefined> {
+  const spec = await spawnSpec(command, ['debug', 'paths'], { env })
+  const res = await runSpec(spec)
+  const match = res.ok ? res.out.match(/^state\s+(.+)$/m) : undefined
+  const found = match?.[1]?.trim()
+  return found ? found : undefined
+}
+
+/**
+ * The OpenCode command Revva may drive, or a reason it cannot.
+ * Revva speaks the V2 API only: V1 has no `serve --service`, no JSON
+ * `/api/info`, and no compatible form or event contract.
+ */
+export async function openCodeAvailable(): Promise<{ ok: boolean; detail: string; command?: string }> {
+  const c = choice()
+  const found = await resolveOpenCode()
+  if (found && found !== V1_ONLY) return { ok: true, detail: '', command: found }
+  const where = c.kind === 'wsl' ? `in ${c.distro || 'the default WSL distribution'}` : 'in the selected command environment'
+  if (found === V1_ONLY) {
+    return {
+      ok: false,
+      detail: `OpenCode V1 is not supported. Revva needs OpenCode V2; install it ${where} (or expose it as \`opencode2\`), then Retry.`
+    }
+  }
   return {
     ok: false,
-    detail: c.kind === 'wsl'
-      ? `\`opencode\` was not found in ${c.distro || 'the default WSL distribution'}. Install it there or choose another command environment in Setup.`
-      : 'The custom command environment could not run `opencode`.'
+    detail: `\`opencode\` was not found ${where}. Install OpenCode V2 there or choose another command environment in Setup.`
   }
 }
 
