@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
+import { ActionError } from '@/lib/ask-agent'
 import type { ReviewRow, WorkSummary } from '@shared/types'
 import { FormCard, PermissionCard, useInbox } from './InboxView'
 import { isReviewStopped, reviewRowTone, reviewStatusLabels, statusTones as toneColors } from '@/lib/agent-status'
@@ -120,7 +121,7 @@ export function WorkAgentActivity({ work }: { work: WorkSummary }): React.JSX.El
         })}
       </div>
       {reviews.isError && <p role="alert" className="text-xs text-destructive">Agent status unavailable. <Button size="xs" variant="ghost" onClick={() => void reviews.refetch()}>Retry</Button></p>}
-      {stop.error && <p role="alert" className="text-xs text-destructive">{stop.error.message}</p>}
+      {stop.error && <ActionError action="stop review" error={stop.error.message} />}
     </div>
     <Dialog open={selectedId !== null} onOpenChange={(open) => { if (!open) setSelectedId(null) }}>
       <DialogContent className="flex max-h-[90vh] flex-col overflow-hidden sm:max-w-4xl" onCloseAutoFocus={(event) => { event.preventDefault(); trigger.current?.focus() }}>

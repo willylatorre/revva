@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
+import { ActionError } from '@/lib/ask-agent'
 import { isReviewStopped, reviewRowTone, reviewStatusLabels, statusTones } from '@/lib/agent-status'
 import { SessionIdButton, TranscriptView, type TranscriptDrive } from './Chat'
 import type { PipelineRole, PushEvent, ReviewRow, WorkState } from '@shared/types'
@@ -91,7 +92,7 @@ export function ReviewPanel({ workId, state, auto }: { workId: string; state: Wo
             active={open === r.id} onClick={() => setOpen(open === r.id ? null : r.id)} />
         ))}
       </div>
-      {stopError && <p role="alert" className="text-xs text-destructive">{stopError}</p>}
+      {stopError && <ActionError action="stop review" error={stopError} />}
       {state === 'WAITING_HUMAN' && !selected && (
         <p className="text-sm text-muted-foreground">Select an agent for its findings, transcript and retry action.</p>
       )}
@@ -137,7 +138,7 @@ function ReviewChip({
           {meta.icon}
           <span className="min-w-0 flex-1">
             <span className="block font-medium">{meta.label}</span>
-            {(row.agentID || row.model) && <span className="block truncate text-xs text-muted-foreground">{[row.agentID, row.model ? modelName || row.model.id : undefined].filter(Boolean).join(' · ')}</span>}
+            {(row.agentID || row.model) && <span className="block truncate text-xs text-muted-foreground">{[row.agentID, row.model ? `${modelName || row.model.id}${row.model.variant ? ` · ${row.model.variant}` : ''}` : undefined].filter(Boolean).join(' · ')}</span>}
           </span>
           {stopped ? <CirclePause className={cn('size-3', statusTones[tone].text)} /> : row.status === 'running' ? (
             <Loader2 className={cn('size-3 animate-spin', statusTones[tone].text)} />
@@ -236,7 +237,7 @@ export function ReviewAgentActions({ row, state, auto, onRelaunched }: {
     <p className="text-xs text-muted-foreground">{reason ?? (row.role === 'fixer'
       ? 'Keeps partial changes and reuses the original session when available. Nothing is reset or discarded.'
       : auto ? 'Other reviewer results are kept; AUTO continues when the gates pass.' : 'Relaunches only this reviewer if the reviewed checkout is unchanged.')}</p>
-    {action.error && <p role="alert" className="break-words text-sm text-destructive">{action.error.message.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '')}</p>}
+    {action.error && <ActionError action={`relaunch ${label}`} error={action.error.message.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '')} className="text-sm" onSent={() => onRelaunched()} />}
   </div>
 }
 
@@ -309,7 +310,7 @@ export function ReviewRerunButton({ workId, disabled }: { workId: string; disabl
     >
       {busy ? 'Starting reviews…' : reviews.data?.length ? 'Re-run all reviews' : 'Start reviews'}
     </Button>
-    {error && <span role="alert" className="text-xs text-destructive">{error}</span>}
+    {error && <ActionError action="start reviews" error={error} />}
     </>
   )
 }

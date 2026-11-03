@@ -186,6 +186,14 @@ function migrate(db: Database.Database): void {
     // "Message ready" cards. Treat existing rows as last-seen now.
     db.exec('UPDATE chat SET seen_at = updated_at WHERE seen_at IS NULL; PRAGMA user_version = 12;')
   }
+  if (version < 13) {
+    // Per-role reasoning-effort variants (e.g. rigor at medium on a self-hosted
+    // model). The variant rides the model ref into session.create; review rows
+    // keep it so a retry reproduces the original attempt's effort.
+    addColumnIfMissing(db, 'role_config', 'variant', 'TEXT')
+    addColumnIfMissing(db, 'review', 'variant', 'TEXT')
+    db.exec('PRAGMA user_version = 13;')
+  }
 }
 
 function addColumnIfMissing(db: Database.Database, table: string, column: string, decl: string): boolean {
@@ -220,18 +228,20 @@ export function settingSet(key: string, value: unknown): void {
 export interface RoleConfigRow {
   role: string
   agentID?: string
-  model?: { providerID: string; id: string }
+  model?: { providerID: string; id: string; variant?: string }
 }
 
 export function roleConfigGet(role: string): RoleConfigRow | undefined {
   const row = getDb()
     .prepare('SELECT * FROM role_config WHERE role = ?')
-    .get(role) as { role: string; agent_id: string | null; provider_id: string | null; model_id: string | null } | undefined
+    .get(role) as { role: string; agent_id: string | null; provider_id: string | null; model_id: string | null; variant: string | null } | undefined
   if (!row) return undefined
   return {
     role: row.role,
     agentID: row.agent_id ?? undefined,
-    model: row.provider_id && row.model_id ? { providerID: row.provider_id, id: row.model_id } : undefined
+    model: row.provider_id && row.model_id
+      ? { providerID: row.provider_id, id: row.model_id, ...(row.variant ? { variant: row.variant } : {}) }
+      : undefined
   }
 }
 
@@ -239,21 +249,23 @@ export function roleConfigList(): RoleConfigRow[] {
   return (
     getDb()
       .prepare('SELECT * FROM role_config')
-      .all() as Array<{ role: string; agent_id: string | null; provider_id: string | null; model_id: string | null }>
+      .all() as Array<{ role: string; agent_id: string | null; provider_id: string | null; model_id: string | null; variant: string | null }>
   ).map((row) => ({
     role: row.role,
     agentID: row.agent_id ?? undefined,
-    model: row.provider_id && row.model_id ? { providerID: row.provider_id, id: row.model_id } : undefined
+    model: row.provider_id && row.model_id
+      ? { providerID: row.provider_id, id: row.model_id, ...(row.variant ? { variant: row.variant } : {}) }
+      : undefined
   }))
 }
 
 export function roleConfigSet(cfg: RoleConfigRow): void {
   getDb()
     .prepare(
-      `INSERT INTO role_config(role, agent_id, provider_id, model_id) VALUES(?,?,?,?)
-       ON CONFLICT(role) DO UPDATE SET agent_id = excluded.agent_id, provider_id = excluded.provider_id, model_id = excluded.model_id`
+      `INSERT INTO role_config(role, agent_id, provider_id, model_id, variant) VALUES(?,?,?,?,?)
+       ON CONFLICT(role) DO UPDATE SET agent_id = excluded.agent_id, provider_id = excluded.provider_id, model_id = excluded.model_id, variant = excluded.variant`
     )
-    .run(cfg.role, cfg.agentID ?? null, cfg.model?.providerID ?? null, cfg.model?.id ?? null)
+    .run(cfg.role, cfg.agentID ?? null, cfg.model?.providerID ?? null, cfg.model?.id ?? null, cfg.model?.variant ?? null)
 }
 
 /* ---------- model favorites (order-preserving list of `providerID::modelID`) ---------- */

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { MessageSquareText, Wrench } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { ActionError } from '@/lib/ask-agent'
 import type { JiraComment, PushEvent } from '@shared/types'
 
 /**
@@ -54,7 +55,7 @@ export function CommentsStrip({ workId }: { workId: string }): React.JSX.Element
         </p>
       ))}
       {mine.length > 3 && <p className="text-[11px] text-muted-foreground">…and {mine.length - 3} more</p>}
-      {error && <p className="text-[11px] text-destructive">{error}</p>}
+      {error && <ActionError action="tackle comments" error={error} className="text-[11px]" />}
     </div>
   )
 }

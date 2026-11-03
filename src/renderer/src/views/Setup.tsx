@@ -255,19 +255,29 @@ function RoleDefaults(): React.JSX.Element {
             <RoleSelectors
               agentID={saved?.agentID ?? DEFAULT}
               modelKey={saved?.model ? `${saved.model.providerID}::${saved.model.id}` : DEFAULT}
+              variant={saved?.model?.variant}
               onAgent={(v) =>
                 void window.revva.roleConfig
                   .save({ role, agentID: v === DEFAULT ? undefined : v, model: saved?.model })
                   .then(() => qc.invalidateQueries({ queryKey: ['role-config'] }))
               }
               onModel={(v) => {
-                let model: { providerID: string; id: string } | undefined
+                let model: { providerID: string; id: string; variant?: string } | undefined
                 if (v !== DEFAULT) {
                   const [providerID, id] = v.split('::')
                   if (providerID && id) model = { providerID, id }
                 }
                 void window.revva.roleConfig
                   .save({ role, agentID: saved?.agentID, model })
+                  .then(() => qc.invalidateQueries({ queryKey: ['role-config'] }))
+              }}
+              onVariant={(v) => {
+                if (!saved?.model) return
+                const model = v === DEFAULT
+                  ? { providerID: saved.model.providerID, id: saved.model.id }
+                  : { providerID: saved.model.providerID, id: saved.model.id, variant: v }
+                void window.revva.roleConfig
+                  .save({ role, agentID: saved.agentID, model })
                   .then(() => qc.invalidateQueries({ queryKey: ['role-config'] }))
               }}
             />

@@ -12,8 +12,8 @@ import {
 } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { ActionError, SendErrorToChatButton } from '@/lib/ask-agent'
 import type { WorkSummary } from '@shared/types'
-
 /** IPC rejections arrive wrapped; show the reviewer-facing sentence only. */
 function cleanError(err: unknown): string {
   return (err instanceof Error ? err.message : String(err)).replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '')
@@ -115,7 +115,12 @@ export function ChatReviewButton({ sessionId, directory, work }: {
         <TooltipContent>Reviewers check the committed changes, a fixer addresses their findings, and re-review runs until the gates pass. Nothing is pushed.</TooltipContent>
       </Tooltip>
     )}
-    {error && <span role="alert" className="max-w-48 truncate text-xs text-destructive" title={error}>{error}</span>}
+    {error && (
+      <span className="flex min-w-0 shrink items-center gap-1">
+        <span role="alert" className="max-w-48 truncate text-xs text-destructive" title={error}>{error}</span>
+        <SendErrorToChatButton action="full review" error={error} />
+      </span>
+    )}
     {note && <span role="status" className="max-w-48 truncate text-xs text-muted-foreground" title={note}>{note}</span>}
     <Dialog open={needsCommit !== null} onOpenChange={(open) => { if (!open) closeDialog() }}>
       <DialogContent onCloseAutoFocus={(e) => { e.preventDefault(); trigger.current?.focus() }}>
@@ -140,7 +145,7 @@ export function ChatReviewButton({ sessionId, directory, work }: {
           }}
         />
         <p className="text-xs text-muted-foreground">Everything listed above is staged and committed on {needsCommit?.branch}. Nothing is pushed.</p>
-        {error && <p role="alert" className="break-words text-sm text-destructive">{error}</p>}
+        {error && <ActionError action="commit before reviewing" error={error} className="text-sm" onSent={closeDialog} />}
         <DialogFooter>
           <Button variant="ghost" onClick={closeDialog}>Cancel</Button>
           <Button disabled={!message.trim() || busy} onClick={() => void start(message)}>

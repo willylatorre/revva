@@ -21,6 +21,7 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { Skeleton } from '@/components/ui/skeleton'
+import { ActionError } from '@/lib/ask-agent'
 import type { PrDetail, PrMergeMethod, WorkSummary } from '@shared/types'
 import { ReviewRerunButton } from './ReviewPanel'
 import { ShipDialog, shipBlockReason } from './ShipPanel'
@@ -87,6 +88,8 @@ export function PrMenu({
   const qc = useQueryClient()
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  /** Which control failed — the fallback button names it in the fix request. */
+  const [errorAction, setErrorAction] = useState('PR action')
   const [done, setDone] = useState<string | null>(null)
   const [open, setOpen] = useState(false)
   const [shipOpen, setShipOpen] = useState(false)
@@ -124,6 +127,7 @@ export function PrMenu({
       .catch((err) => {
         const msg = err instanceof Error ? err.message : String(err)
         setError(msg)
+        setErrorAction(kind === 'review' ? 'start review session' : 'solve conflicts')
         toast.error(kind === 'review' ? 'Could not start the review session' : 'Could not start conflict solving', {
           description: msg
         })
@@ -147,6 +151,7 @@ export function PrMenu({
       .catch((err) => {
         const msg = err instanceof Error ? err.message : String(err)
         setError(msg)
+        setErrorAction(label)
         // The menu closes on selection — the toast is what the user actually sees.
         toast.error(`${label[0]!.toUpperCase()}${label.slice(1)} failed`, { description: msg })
       })
@@ -160,7 +165,7 @@ export function PrMenu({
   const shipReason = work ? shipBlockReason(work) : undefined
   return (
     <>
-      <DropdownMenu onOpenChange={setOpen}>
+      <DropdownMenu open={open} onOpenChange={setOpen}>
         <DropdownMenuTrigger asChild>
           <Button variant="outline" size="sm" className="shrink-0">
             <Github data-icon="inline-start" />
@@ -179,8 +184,15 @@ export function PrMenu({
             )}
           </DropdownMenuLabel>
           {pr.isLoading && <Skeleton className="mx-2 h-8" />}
-          {pr.error instanceof Error && <p className="px-2 py-1 text-[11px] text-destructive">{pr.error.message}</p>}
-          {error && <p role="alert" className="px-2 py-1 text-[11px] text-destructive">{error}</p>}
+          {pr.error instanceof Error && <ActionError action="read the PR" error={pr.error.message} className="px-2 py-1 text-[11px]" />}
+          {error && (
+            <ActionError
+              action={errorAction}
+              error={error}
+              className="px-2 py-1 text-[11px]"
+              onSent={() => { setError(null); setDone(null); setOpen(false) }}
+            />
+          )}
           {done && <p className="px-2 py-1 text-[11px] text-emerald-600 dark:text-emerald-400">{done}</p>}
           {data && (
             <>

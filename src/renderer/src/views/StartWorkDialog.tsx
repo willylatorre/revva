@@ -59,7 +59,7 @@ export function StartWorkDialog({
   const [agentID, setAgentID] = useState('__default__')
   const [modelKey, setModelKey] = useState('__default__')
   const [showReviewOverrides, setShowReviewOverrides] = useState(false)
-  const [reviewSel, setReviewSel] = useState<Record<'sol' | 'rigor' | 'impeccable' | 'fixer', { agentID: string; modelKey: string }>>({
+  const [reviewSel, setReviewSel] = useState<Record<'sol' | 'rigor' | 'impeccable' | 'fixer', { agentID: string; modelKey: string; variant?: string }>>({
     sol: { agentID: DEFAULT, modelKey: DEFAULT },
     rigor: { agentID: DEFAULT, modelKey: DEFAULT },
     impeccable: { agentID: DEFAULT, modelKey: DEFAULT },
@@ -144,10 +144,10 @@ export function StartWorkDialog({
         grill,
         shipOnApprove: auto || shipOnApprove,
         reviewSel: {
-          sol: selOrUndefined(reviewSel.sol.agentID, reviewSel.sol.modelKey),
-          rigor: selOrUndefined(reviewSel.rigor.agentID, reviewSel.rigor.modelKey),
-          impeccable: selOrUndefined(reviewSel.impeccable.agentID, reviewSel.impeccable.modelKey),
-          fixer: selOrUndefined(reviewSel.fixer.agentID, reviewSel.fixer.modelKey)
+          sol: selOrUndefined(reviewSel.sol.agentID, reviewSel.sol.modelKey, reviewSel.sol.variant),
+          rigor: selOrUndefined(reviewSel.rigor.agentID, reviewSel.rigor.modelKey, reviewSel.rigor.variant),
+          impeccable: selOrUndefined(reviewSel.impeccable.agentID, reviewSel.impeccable.modelKey, reviewSel.impeccable.variant),
+          fixer: selOrUndefined(reviewSel.fixer.agentID, reviewSel.fixer.modelKey, reviewSel.fixer.variant)
         }
       })
       return work
@@ -414,8 +414,10 @@ export function StartWorkDialog({
                   <RoleSelectors
                     agentID={reviewSel[role].agentID}
                     modelKey={reviewSel[role].modelKey}
+                    variant={reviewSel[role].variant}
                     onAgent={(v) => setReviewSel((s) => ({ ...s, [role]: { ...s[role], agentID: v } }))}
-                    onModel={(v) => setReviewSel((s) => ({ ...s, [role]: { ...s[role], modelKey: v } }))}
+                    onModel={(v) => setReviewSel((s) => ({ ...s, [role]: { agentID: s[role].agentID, modelKey: v } }))}
+                    onVariant={(v) => setReviewSel((s) => ({ ...s, [role]: { ...s[role], variant: v === DEFAULT ? undefined : v } }))}
                   />
                 </div>
               ))}

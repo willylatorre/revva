@@ -44,10 +44,10 @@ const exec = promisify(execFile)
 /**
  * Watchdog: a reviewer/fixer session stuck this long is errored out. The rigor
  * reviewer on a self-hosted model without prompt cache routinely needs 15–20 min
- * on a large diff, so this sits above that band; the "End early" control covers
- * runs the human doesn't want to wait for.
+ * on a large diff, so this sits well above that band; the "End early" control
+ * covers runs the human doesn't want to wait for.
  */
-const SESSION_TIMEOUT_MS = 40 * 60_000
+const SESSION_TIMEOUT_MS = 60 * 60_000
 const LEGACY_RESTART_ERROR = 'revva restarted while this review was running'
 
 interface ReviewDbRow {
@@ -62,6 +62,7 @@ interface ReviewDbRow {
   agent_id: string | null
   provider_id: string | null
   model_id: string | null
+  variant: string | null
   created_at: number
   updated_at: number
 }
@@ -77,7 +78,9 @@ function toRow(r: ReviewDbRow): ReviewRow {
     findings: r.findings,
     error: r.error ?? undefined,
     agentID: r.agent_id ?? undefined,
-    model: r.provider_id && r.model_id ? { providerID: r.provider_id, id: r.model_id } : undefined,
+    model: r.provider_id && r.model_id
+      ? { providerID: r.provider_id, id: r.model_id, ...(r.variant ? { variant: r.variant } : {}) }
+      : undefined,
     createdAt: r.created_at,
     updatedAt: r.updated_at
   }
@@ -342,25 +345,25 @@ class ReviewManager {
       ]
 
       const now = Date.now()
-      // Columns: work_id, round, role, session_id, status, findings, error, agent_id, provider_id, model_id, created_at, updated_at
+      // Columns: work_id, round, role, session_id, status, findings, error, agent_id, provider_id, model_id, variant, created_at, updated_at
       const insert = getDb().prepare(
-        `INSERT INTO review(work_id, round, role, session_id, status, findings, error, agent_id, provider_id, model_id, created_at, updated_at)
-         VALUES(?,?,?,NULL,?,?,NULL,?,?,?,?,?)`
+        `INSERT INTO review(work_id, round, role, session_id, status, findings, error, agent_id, provider_id, model_id, variant, created_at, updated_at)
+         VALUES(?,?,?,NULL,?,?,NULL,?,?,?,?,?,?)`
       )
 
       const live: Array<{ reviewId: number; role: ReviewRole; sel: { agentID?: string; model?: ModelRef } }> = []
       for (const p of plan) {
         const sel = resolveSel(workId, p.role, perRun)
         if (p.error) {
-          const res = insert.run(workId, round, p.role, 'error', '', sel.agentID ?? null, sel.model?.providerID ?? null, sel.model?.id ?? null, now, now)
+          const res = insert.run(workId, round, p.role, 'error', '', sel.agentID ?? null, sel.model?.providerID ?? null, sel.model?.id ?? null, sel.model?.variant ?? null, now, now)
           this.update(Number(res.lastInsertRowid), 'error', undefined, p.error)
           continue
         }
         if (p.skipReason) {
-          insert.run(workId, round, p.role, 'skipped', p.skipReason, sel.agentID ?? null, sel.model?.providerID ?? null, sel.model?.id ?? null, now, now)
+          insert.run(workId, round, p.role, 'skipped', p.skipReason, sel.agentID ?? null, sel.model?.providerID ?? null, sel.model?.id ?? null, sel.model?.variant ?? null, now, now)
           continue
         }
-        const res = insert.run(workId, round, p.role, 'pending', '', sel.agentID ?? null, sel.model?.providerID ?? null, sel.model?.id ?? null, now, now)
+        const res = insert.run(workId, round, p.role, 'pending', '', sel.agentID ?? null, sel.model?.providerID ?? null, sel.model?.id ?? null, sel.model?.variant ?? null, now, now)
         live.push({ reviewId: Number(res.lastInsertRowid), role: p.role, sel })
       }
       this.push(workId, round)
@@ -440,9 +443,9 @@ class ReviewManager {
       }
       const now = Date.now()
       const result = getDb().prepare(
-        `INSERT INTO review(work_id, round, role, session_id, status, findings, error, agent_id, provider_id, model_id, created_at, updated_at)
-         VALUES(?,?,?,NULL,'pending','',NULL,?,?,?,?,?)`
-      ).run(workId, round, row.role, row.agentID ?? null, row.model?.providerID ?? null, row.model?.id ?? null, now, now)
+        `INSERT INTO review(work_id, round, role, session_id, status, findings, error, agent_id, provider_id, model_id, variant, created_at, updated_at)
+         VALUES(?,?,?,NULL,'pending','',NULL,?,?,?,?,?,?)`
+      ).run(workId, round, row.role, row.agentID ?? null, row.model?.providerID ?? null, row.model?.id ?? null, row.model?.variant ?? null, now, now)
       this.settledRounds.delete(`${workId}:${round}`)
       workManager.setReviewState(workId, 'REVIEW')
       this.audit(workId, round, 'reviewer-retried', row.role)
@@ -472,7 +475,7 @@ class ReviewManager {
       const session = await api.session.create({
         title: `${work.ticket_key || work.branch} · ${role} (round ${round})`,
         agent: sel.agentID ?? null,
-        model: sel.model ? { providerID: sel.model.providerID, id: sel.model.id } : null,
+        model: sel.model ? { providerID: sel.model.providerID, id: sel.model.id, ...(sel.model.variant ? { variant: sel.model.variant } : {}) } : null,
         location: { directory: work.worktree_dir },
         ...(guard.length ? { permissions: guard } : {}),
         metadata: { revva: { kind: 'review', workId: work.id, round, role } }
@@ -817,10 +820,10 @@ class ReviewManager {
     const now = Date.now()
     const res = getDb()
       .prepare(
-        `INSERT INTO review(work_id, round, role, session_id, status, findings, error, agent_id, provider_id, model_id, created_at, updated_at)
-         VALUES(?,?,?,NULL,'pending','',NULL,?,?,?,?,?)`
+        `INSERT INTO review(work_id, round, role, session_id, status, findings, error, agent_id, provider_id, model_id, variant, created_at, updated_at)
+         VALUES(?,?,?,NULL,'pending','',NULL,?,?,?,?,?,?)`
       )
-      .run(workId, round, 'fixer', sel.agentID ?? null, sel.model?.providerID ?? null, sel.model?.id ?? null, now, now)
+      .run(workId, round, 'fixer', sel.agentID ?? null, sel.model?.providerID ?? null, sel.model?.id ?? null, sel.model?.variant ?? null, now, now)
     const reviewId = Number(res.lastInsertRowid)
     this.audit(workId, round, 'fixer-dispatched', changes.map((c) => c.role).join(', ') + ' requested changes')
     workManager.setReviewState(workId, 'FIXING')
@@ -845,7 +848,7 @@ class ReviewManager {
         (await api.session.create({
           title: `${work.ticket_key || work.branch} · fix (after round ${round})`,
           agent: sel.agentID ?? null,
-          model: sel.model ? { providerID: sel.model.providerID, id: sel.model.id } : null,
+          model: sel.model ? { providerID: sel.model.providerID, id: sel.model.id, ...(sel.model.variant ? { variant: sel.model.variant } : {}) } : null,
           location: { directory: work.worktree_dir },
           ...(guard.length ? { permissions: guard } : {}),
           metadata: { revva: { kind: 'review', workId, round, role: 'fixer' } }
@@ -855,8 +858,8 @@ class ReviewManager {
       await coordinator.prepareReview(session.id)
       if (this.sessions.get(session.id)?.reviewId !== reviewId) return
       this.starting.delete(workId)
-      if (previous) getDb().prepare('UPDATE review SET agent_id = ?, provider_id = ?, model_id = ? WHERE id = ?')
-        .run(previous.agent ?? null, previous.model?.providerID ?? null, previous.model?.id ?? null, reviewId)
+      if (previous) getDb().prepare('UPDATE review SET agent_id = ?, provider_id = ?, model_id = ?, variant = ? WHERE id = ?')
+        .run(previous.agent ?? null, previous.model?.providerID ?? null, previous.model?.id ?? null, previous.model?.variant ?? null, reviewId)
       await api.session.prompt({ sessionID: session.id, delivery: 'steer', text: [
         ...(resume ? ['Resume the interrupted fixer from its existing work. Inspect partial changes and any commits before continuing. Do not reset, stash, clean, discard or overwrite unrelated edits. Finish the outstanding findings rather than starting over.', ''] : []),
         fixerPrompt(work, round, changes)

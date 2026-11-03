@@ -40,7 +40,8 @@ export async function listModels(): Promise<ModelInfo[]> {
         id: m.modelID ?? m.id,
         name: m.name,
         context: m.limit?.context,
-        gated: gating.get(m.providerID)
+        gated: gating.get(m.providerID),
+        variants: m.variants?.length ? m.variants.map((v) => v.id) : undefined
       }
       return { ...model, favorite: favSet.has(`${model.providerID}::${model.id}`) || undefined }
     })

@@ -48,7 +48,9 @@ export const modelInfoSchema = z.object({
   /** Set when the provider's local endpoint (e.g. proxy script) is down — pickers gray out + explain. */
   gated: z.string().optional(),
   /** User favorited it in Setup; pickers pin favorites to the top. */
-  favorite: z.boolean().optional()
+  favorite: z.boolean().optional(),
+  /** Reasoning-effort variant IDs the service publishes (e.g. low/medium/xhigh). */
+  variants: z.array(z.string()).optional()
 })
 export type ModelInfo = z.infer<typeof modelInfoSchema>
 

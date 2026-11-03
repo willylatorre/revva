@@ -716,7 +716,7 @@ class WorkManager {
       const session = await api.session.create({
         title: `${ticket.key}: ${ticket.summary}`.slice(0, 100),
         agent: input.agentID ?? null,
-        model: input.model ? { providerID: input.model.providerID, id: input.model.id } : null,
+        model: input.model ? { providerID: input.model.providerID, id: input.model.id, ...(input.model.variant ? { variant: input.model.variant } : {}) } : null,
         location: { directory: worktreeDir },
         ...(guard.length ? { permissions: guard } : {}),
         metadata: { revva: { kind: 'chat', workId: id, ticketKey: ticket.key, phase: 'build', mode: input.mode } }

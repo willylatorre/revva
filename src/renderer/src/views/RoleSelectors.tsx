@@ -7,6 +7,7 @@ import {
   SelectValue
 } from '@/components/ui/select'
 import type { ModelRef } from '@shared/types'
+import { cn } from '@/lib/utils'
 import { modelKeyOf, parseModelKey } from './NewChatDialog'
 
 export const DEFAULT = '__default__'
@@ -15,18 +16,23 @@ export const DEFAULT = '__default__'
 export function RoleSelectors({
   agentID,
   modelKey,
+  variant,
   onAgent,
-  onModel
+  onModel,
+  onVariant
 }: {
   agentID: string
   modelKey: string
+  variant?: string
   onAgent: (v: string) => void
   onModel: (v: string) => void
+  onVariant?: (v: string) => void
 }): React.JSX.Element {
   const agents = useQuery({ queryKey: ['agents'], queryFn: () => window.revva.inventory.agents() })
   const models = useQuery({ queryKey: ['models'], queryFn: () => window.revva.inventory.models() })
+  const variants = models.data?.find((m) => modelKeyOf(m.providerID, m.id) === modelKey)?.variants ?? []
   return (
-    <div className="grid grid-cols-2 gap-2">
+    <div className={cn('grid gap-2', onVariant && variants.length ? 'grid-cols-3' : 'grid-cols-2')}>
       <Select value={agentID} onValueChange={(v) => onAgent(v ?? DEFAULT)}>
         <SelectTrigger size="sm" className="w-full">
           <SelectValue />
@@ -55,13 +61,31 @@ export function RoleSelectors({
           ))}
         </SelectContent>
       </Select>
+      {onVariant && variants.length > 0 && (
+        <Select value={variant ?? DEFAULT} onValueChange={(v) => onVariant(v ?? DEFAULT)}>
+          <SelectTrigger size="sm" className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={DEFAULT}>Effort: model default</SelectItem>
+            {variants.map((v) => (
+              <SelectItem key={v} value={v}>
+                Effort: {v}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
     </div>
   )
 }
 
-export function selOrUndefined(agentID: string, modelKey: string): { agentID?: string; model?: ModelRef } | undefined {
+export function selOrUndefined(agentID: string, modelKey: string, variant?: string): { agentID?: string; model?: ModelRef } | undefined {
   const out: { agentID?: string; model?: ModelRef } = {}
   if (agentID !== DEFAULT) out.agentID = agentID
-  if (modelKey !== DEFAULT) out.model = parseModelKey(modelKey)
+  if (modelKey !== DEFAULT) {
+    out.model = parseModelKey(modelKey)
+    if (variant && variant !== DEFAULT) out.model.variant = variant
+  }
   return Object.keys(out).length > 0 ? out : undefined
 }

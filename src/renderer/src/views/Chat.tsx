@@ -12,6 +12,7 @@ import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from '@/compone
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
+import { ActionError, AskAgentProvider } from '@/lib/ask-agent'
 import { beginTranscriptSnapshot, displayTranscript, finishTranscriptSnapshot, mergeHistory, transcriptReady, useTranscriptVisibility } from '@/lib/transcript-stream'
 import { transcriptRequest } from '@/lib/transcript-requests'
 import { SessionStats } from '@/components/session-stats'
@@ -1101,13 +1102,20 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
       })
       .catch((err) => console.error('[chat] /new failed:', err))
   }
+  /** Every failed control in this conversation reports here: one chat, one sender. */
+  const sendToChat = async (text: string): Promise<void> => {
+    await (chatWork ? window.revva.work.prompt(sessionId, text) : window.revva.chat.prompt(sessionId, text))
+    void qc.invalidateQueries({ queryKey: ['chat-messages', sessionId] })
+    void qc.invalidateQueries({ queryKey: ['chats'] })
+  }
   return (
+    <AskAgentProvider ask={sendToChat}>
     <ConversationEnvironment work={chatWork}>
       {(chat?.ticketKey || chat?.prUrl) && !chatWork && <p role={attachment.isError ? 'alert' : 'status'} className="shrink-0 border-b px-3 py-2 text-xs text-muted-foreground">
         {attachment.error instanceof Error ? `Could not load conversation utilities: ${attachment.error.message}` : 'Loading conversation utilities…'}
         {attachment.isError && <Button size="sm" variant="outline" onClick={() => void attachment.refetch()}>Retry</Button>}
       </p>}
-      {tag.error && <p role="alert" className="shrink-0 border-b px-4 py-2 text-sm text-destructive">{tag.error instanceof Error ? tag.error.message : String(tag.error)}</p>}
+      {tag.error && <ActionError action="link ticket" error={tag.error instanceof Error ? tag.error.message : String(tag.error)} className="shrink-0 border-b px-4 py-2 text-sm" />}
     <TranscriptView
       key={sessionId}
       sessionId={sessionId}
@@ -1161,11 +1169,7 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
               directory={chatWork?.worktreeDir ?? chat?.directory ?? ''}
               work={chatWork}
               onOpenChat={onOpenChat}
-              onAskAgent={async (text) => {
-                await (chatWork ? window.revva.work.prompt(sessionId, text) : window.revva.chat.prompt(sessionId, text))
-                void qc.invalidateQueries({ queryKey: ['chat-messages', sessionId] })
-                void qc.invalidateQueries({ queryKey: ['chats'] })
-              }}
+              onAskAgent={sendToChat}
             />
           )}
           <ConversationDetails sessionId={sessionId} directory={chat?.directory} work={chatWork}>
@@ -1175,5 +1179,6 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
       }
     />
     </ConversationEnvironment>
+    </AskAgentProvider>
   )
 }

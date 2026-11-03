@@ -17,6 +17,33 @@ import type { ShipCheck, ShipResult } from '@shared/types'
 
 const exec = promisify(execFile)
 
+/** Push runs the repo's pre-push hook (lint, dep scans, tests, builds). Those are
+ *  minutes-long by design, so the ordinary 60s command budget guarantees a kill. */
+const PUSH_TIMEOUT_MS = 45 * 60_000
+
+interface ProbeResult {
+  ok: boolean
+  out: string
+  err: string
+  /** execFile killed the command at its timeout — a budget problem, not a git refusal. */
+  timedOut: boolean
+}
+
+/**
+ * A failed push is nearly always the pre-push hook, and its useful line is the
+ * LAST one — a `set -e` hook dies after printing the failure, so the head of the
+ * output is just successful scan chatter. Report the tail, and say plainly when
+ * the hook was killed rather than refused.
+ */
+export function pushMessage(push: ProbeResult, worktreeDir: string): string {
+  if (push.timedOut) {
+    return `git push was stopped after ${PUSH_TIMEOUT_MS / 60_000} minutes — the repository's pre-push hook did not finish. Run the push once by hand in ${worktreeDir} to see what the hook does, then retry.`
+  }
+  const output = (push.err || push.out).trim()
+  const tail = output.length > 3000 ? `…${output.slice(-3000)}` : output
+  return `git push failed: ${tail || 'git exited without a message'}`
+}
+
 interface ShipWorkRow {
   id: string
   ticket_key: string
@@ -185,8 +212,10 @@ class ShipManager {
       audit(workId, 'ship-start', `branch ${work.branch}${work.pr_url ? ' (update existing PR)' : ''}`)
 
       // 1. Push (never force). -u so gh and gh-stack see the tracking branch.
-      const push = await this.probe('git', ['-C', work.worktree_dir, 'push', '-u', 'origin', work.branch])
-      if (!push.ok) throw new Error(`git push failed: ${push.err.slice(0, 400)}`)
+      //    Push runs the repo's pre-push hook (lint, dependency scans, tests, builds),
+      //    which routinely outlives a short command timeout — give it a real budget.
+      const push = await this.probe('git', ['-C', work.worktree_dir, 'push', '-u', 'origin', work.branch], PUSH_TIMEOUT_MS)
+      if (!push.ok) throw new Error(pushMessage(push, work.worktree_dir))
       audit(workId, 'pushed', work.branch)
 
       // 2. PR: linked already ⇒ the push above updated it — no second PR, ever.
@@ -247,8 +276,8 @@ class ShipManager {
 
   /** Push existing commits to the branch (used by rework); never force. */
   async pushOnly(worktreeDir: string, branch: string): Promise<void> {
-    const push = await this.probe('git', ['-C', worktreeDir, 'push', 'origin', branch])
-    if (!push.ok) throw new Error(`git push failed: ${push.err.slice(0, 400)}`)
+    const push = await this.probe('git', ['-C', worktreeDir, 'push', 'origin', branch], PUSH_TIMEOUT_MS)
+    if (!push.ok) throw new Error(pushMessage(push, worktreeDir))
   }
 
   /**
@@ -370,17 +399,19 @@ class ShipManager {
   }
 
   /** run and capture; ok = exit 0. */
-  private async probe(cmd: string, args: string[]): Promise<{ ok: boolean; out: string; err: string }> {
-    return this.probeIn(undefined, cmd, args)
+  private async probe(cmd: string, args: string[], timeoutMs = 60_000): Promise<ProbeResult> {
+    return this.probeIn(undefined, cmd, args, timeoutMs)
   }
 
-  private async probeIn(cwd: string | undefined, cmd: string, args: string[]): Promise<{ ok: boolean; out: string; err: string }> {
+  private async probeIn(cwd: string | undefined, cmd: string, args: string[], timeoutMs = 60_000): Promise<ProbeResult> {
     try {
-      const res = await exec(cmd, args, { cwd, timeout: 60_000, maxBuffer: 8 * 1024 * 1024 })
-      return { ok: true, out: res.stdout, err: res.stderr }
+      const res = await exec(cmd, args, { cwd, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 })
+      return { ok: true, out: res.stdout, err: res.stderr, timedOut: false }
     } catch (err) {
-      const e = err as { stdout?: string; stderr?: string; message?: string }
-      return { ok: false, out: e.stdout ?? '', err: e.stderr ?? e.message ?? String(err) }
+      const e = err as { stdout?: string; stderr?: string; message?: string; killed?: boolean; signal?: string }
+      // execFile kills a command that outlives its timeout; that is not a git refusal.
+      const timedOut = !!e.killed && (e.signal === 'SIGTERM' || e.signal === 'SIGKILL')
+      return { ok: false, out: e.stdout ?? '', err: e.stderr ?? e.message ?? String(err), timedOut }
     }
   }
 }

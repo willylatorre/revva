@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/dialog'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
+import { ActionError } from '@/lib/ask-agent'
 import type { ShipCheck, WorkSummary } from '@shared/types'
 
 /** States revva can push/PR from; running sessions must finish first, READY/ABANDONED have nothing to ship. */
@@ -140,7 +141,11 @@ export function ShipDialog({ work, open, onClose }: { work: WorkSummary; open: b
           {checks.isLoading && <p className="text-xs text-muted-foreground">Checking…</p>}
           {checks.isError && (
             <div role="alert" className="text-xs text-destructive">
-              <p>Could not run shipping checks: {checks.error instanceof Error ? checks.error.message : String(checks.error)}</p>
+              <ActionError
+                action="shipping checks"
+                error={checks.error instanceof Error ? checks.error.message : String(checks.error)}
+                onSent={onClose}
+              />
               <Button variant="outline" size="sm" className="mt-2" onClick={() => void checks.refetch()}>Retry checks</Button>
             </div>
           )}
@@ -158,7 +163,13 @@ export function ShipDialog({ work, open, onClose }: { work: WorkSummary; open: b
               </div>
             </div>
           ))}
-          {ship.error instanceof Error && <p className="text-xs text-destructive">{ship.error.message}</p>}
+          {ship.error instanceof Error && (
+            <ActionError
+              action="push / PR"
+              error={ship.error.message.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '')}
+              onSent={onClose}
+            />
+          )}
         </div>
         {unreviewed && (
           <div role="alert" className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-2.5 text-xs text-amber-700 dark:text-amber-400">

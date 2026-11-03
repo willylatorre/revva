@@ -28,8 +28,18 @@ async function gh(args: string[], cwd?: string, opts?: { timeoutMs?: number }): 
 }
 
 /** gh does not understand `-C`; git commands must run through git with -C. */
-async function git(cwd: string, args: string[]): Promise<{ ok: boolean; out: string; err: string }> {
-  return run('git', ['-C', cwd, ...args], undefined)
+async function git(cwd: string, args: string[], opts?: { timeoutMs?: number }): Promise<{ ok: boolean; out: string; err: string }> {
+  return run('git', ['-C', cwd, ...args], undefined, opts)
+}
+
+/** Repo pre-push hooks (lint, dep scans, tests, builds) are minutes-long; the
+ *  ordinary 60s budget would kill them mid-hook and look like a git refusal. */
+const PUSH_TIMEOUT_MS = 45 * 60_000
+
+/** The hook's verdict is the LAST line it printed, not the head of successful scans. */
+function pushErrorTail(out: string, err: string): string {
+  const output = (err || out).trim()
+  return output.length > 3000 ? `…${output.slice(-3000)}` : output
 }
 
 async function run(cmd: string, args: string[], cwd?: string, opts?: { timeoutMs?: number }): Promise<{ ok: boolean; out: string; err: string; code: number }> {
@@ -641,9 +651,9 @@ class GitHubManager {
         throw new Error(`Rebase conflicts in ${pr.headRefName} — resolve locally: git rebase origin/${pr.baseRefName}`)
       }
       // The PR head branch may be behind a fork; push permission is whatever gh/git grants.
-      const push = await git(worktreeDir, ['push', '--force-with-lease', 'origin', `HEAD:refs/heads/${pr.headRefName}`])
+      const push = await git(worktreeDir, ['push', '--force-with-lease', 'origin', `HEAD:refs/heads/${pr.headRefName}`], { timeoutMs: PUSH_TIMEOUT_MS })
       if (!push.ok) {
-        throw new Error(`Push of rebased branch failed (fork head?): ${push.err.slice(0, 300)}`)
+        throw new Error(`Push of rebased branch failed (fork head?): ${pushErrorTail(push.out, push.err)}`)
       }
       this.markSeen(prUrl)
       this.invalidate('mine')
@@ -667,13 +677,13 @@ class GitHubManager {
     if (!remote.ok || repoFromGitRemote(remote.out)?.toLowerCase() !== pr.repo.toLowerCase()) {
       throw new Error(`The checkout at ${directory} does not have ${pr.repo} as its origin.`)
     }
-    const push = await git(directory, ['push', 'origin', `HEAD:refs/heads/${pr.headRefName}`])
+    const push = await git(directory, ['push', 'origin', `HEAD:refs/heads/${pr.headRefName}`], { timeoutMs: PUSH_TIMEOUT_MS })
     if (!push.ok) {
-      const err = (push.err || push.out).slice(0, 300)
+      const err = pushErrorTail(push.out, push.err)
       if (/rejected|non-fast-forward/i.test(err)) {
         throw new Error(`Push rejected — the PR moved on GitHub. Merge or rebase the new head in ${directory} first (or use Rebase onto base).`)
       }
-      throw new Error(`git push failed: ${err}`)
+      throw new Error(`git push failed: ${err || 'git exited without a message'}`)
     }
     this.markSeen(prUrl)
   }

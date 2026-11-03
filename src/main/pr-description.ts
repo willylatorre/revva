@@ -187,7 +187,7 @@ class PrDescriptionWriter {
         const api = openCodeService.api
         const session = await api.session.create({
           title: `PR #${pr.number} · description`,
-          model: sel?.model ? { id: sel.model.id, providerID: sel.model.providerID } : null,
+          model: sel?.model ? { id: sel.model.id, providerID: sel.model.providerID, ...(sel.model.variant ? { variant: sel.model.variant } : {}) } : null,
           metadata: { revva: { kind: 'pr-description', prUrl } }
         })
         sessionId = session.id

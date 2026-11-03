@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverDescription, PopoverHeader, PopoverTitle, PopoverTrigger } from '@/components/ui/popover'
 import { Separator } from '@/components/ui/separator'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { ActionError } from '@/lib/ask-agent'
 import type { WorkSummary } from '@shared/types'
 import { ReviewRerunButton } from './ReviewPanel'
 import { ShipDialog, shipBlockReason } from './ShipPanel'
@@ -261,7 +262,7 @@ export function ConversationDetails({ sessionId, directory, work, children }: {
         </div>
         {note && <p className="text-xs text-muted-foreground">{note}</p>}
         {anchorNote && <p className="text-xs text-muted-foreground">{anchorNote}</p>}
-        {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+        {error && <ActionError action="move this conversation" error={error} className="text-sm" onSent={() => setOpen(false)} />}
       </div>
     </PopoverContent>
   </Popover>
