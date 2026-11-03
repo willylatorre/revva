@@ -10,6 +10,7 @@ import type { PushEvent } from '@shared/types'
 import { pushToWindows } from '../push'
 import { openCodeService } from './service'
 import { streamBuffer } from './stream-buffer'
+import { bridgeEventPaths } from './path-bridge'
 
 const TRANSCRIPT_RESET_EVENTS = new Set(['session.message.content.updated', 'session.revert.committed', 'session.revert.cleared', 'session.compaction.ended'])
 const TOOL_STATE_EVENTS = new Set(['session.tool.called', 'session.tool.success', 'session.tool.failed'])
@@ -61,8 +62,8 @@ class EventBus extends EventEmitter {
             this.emit('stream:reconnect')
           }
           if (process.env.REVVA_DEBUG_EVENTS) console.log('[bus]', (event as RawEvent).type)
-          this.emit('event', event)
-          const raw = event as RawEvent
+          const raw = bridgeEventPaths(event as RawEvent)
+          this.emit('event', raw)
           const toolCoverage = streamBuffer.onEvent(raw)
           if (raw.type === 'session.step.streamed' && typeof raw.data?.sessionID === 'string') {
             // A draft may become readable before its tools finish. This is a
@@ -82,13 +83,13 @@ class EventBus extends EventEmitter {
             // for exactly this message/tool application. Absent means refresh.
             pushToWindows({ kind: 'chat.tool', sessionId: raw.data.sessionID, tool: String(raw.data.name ?? 'tool'), state: raw.type, messageId: toolCoverage?.messageId, toolId: toolCoverage?.toolId })
           }
-          if ((event as RawEvent).type === 'mcp.status.changed') {
+          if (raw.type === 'mcp.status.changed') {
             pushToWindows({ kind: 'mcp.changed' })
           }
-          this.pushActivity(event as RawEvent)
-          this.pushInbox(event as RawEvent)
-          this.pushModel(event as RawEvent)
-          this.pushAgent(event as RawEvent)
+          this.pushActivity(raw)
+          this.pushInbox(raw)
+          this.pushModel(raw)
+          this.pushAgent(raw)
         }
       } catch {
         // stream error — fall through to reconnect

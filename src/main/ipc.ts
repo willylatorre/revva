@@ -6,10 +6,10 @@ import { randomUUID } from 'node:crypto'
 import { readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { z } from 'zod'
-import { IPC, settingsKeySchema, chatCreateInputSchema, modelRefSchema, type Workspace } from '@shared/types'
+import { IPC, settingsKeySchema, toolchainChoiceSchema, chatCreateInputSchema, modelRefSchema, type Workspace } from '@shared/types'
 import { keepAwake } from './keep-awake'
 import { detectDictationApps } from './dictation'
-import { openCodeService } from './opencode/service'
+import { openCodeService, resetServiceSpawn } from './opencode/service'
 import { chatManager } from './opencode/chats'
 import { agentSessions } from './opencode/agent-sessions'
 import { agentActivityMeter } from './opencode/agent-activity'
@@ -37,6 +37,7 @@ import { scriptManager } from './scripts'
 import { githubManager } from './github'
 import { prDescriptionWriter } from './pr-description'
 import { startTicketSession } from './tasks'
+import { probeToolchain, setChoice } from './toolchain'
 import { discoverRepositories } from './repositories'
 import { parsePrRef } from '@shared/pr-ref'
 import { getDb, settingGet, settingSet, roleConfigList, roleConfigSet, favoriteModels, toggleFavoriteModel } from './db'
@@ -161,7 +162,16 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.settingsSet, (_e, key: string, value: unknown) => {
     settingsKeySchema.parse(key)
     settingSet(key, value)
+    // A different command environment invalidates the derived launch command
+    // and the cached tool lookups. The client re-attaches on its own retry.
+    if (key === 'toolchain.environment') {
+      setChoice(toolchainChoiceSchema.parse(value ?? { kind: 'native' }))
+      resetServiceSpawn()
+    }
   })
+
+  /* ---------- command environment (where git/gh/opencode live) ---------- */
+  ipcMain.handle(IPC.toolchainProbe, () => probeToolchain())
 
   /* ---------- keep awake (caffeinate equivalent) ---------- */
   ipcMain.handle(IPC.keepAwakeGet, () => keepAwake.enabled)

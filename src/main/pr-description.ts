@@ -9,8 +9,7 @@
  * The model comes from the `prDescription` role default (Setup → Role defaults),
  * never a hardcoded ID; with no role default the OpenCode service default is used.
  */
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { execTool } from './toolchain'
 import { openCodeService } from './opencode/service'
 import { eventBus, type RawEvent } from './opencode/bus'
 import { getDb, roleConfigGet, settingGet } from './db'
@@ -19,7 +18,7 @@ import { mergeRevvaSection, stripRevvaMarkers, unwrapMarkdownFence } from '@shar
 import { renderPrompt, DEFAULT_PR_DESCRIPTION_PROMPT } from '@shared/prompts'
 import type { PrDescriptionDraft } from '@shared/types'
 
-const exec = promisify(execFile)
+const exec = execTool
 
 /** Model calls outlive the default 60s gh timeout; the diff fetch does not. */
 const GENERATE_TIMEOUT_MS = 120_000

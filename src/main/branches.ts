@@ -18,14 +18,13 @@
  * be mid-edit and git's own carry-the-changes behaviour would mix that work onto
  * another branch. A failed switch leaves the tree exactly as it was.
  */
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { execTool } from './toolchain'
 import { realpath } from 'node:fs/promises'
 import { dirname, isAbsolute, resolve } from 'node:path'
 import { listRegisteredWorktrees } from './worktree-safety'
 import type { RepoBranch, RepoBranchList } from '@shared/types'
 
-const exec = promisify(execFile)
+const exec = execTool
 
 /** `git` run inside `cwd` as a separate argument pair (never an interpolated command line). */
 async function git(cwd: string, args: string[]): Promise<string> {

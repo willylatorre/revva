@@ -87,6 +87,7 @@ import { homedir } from 'node:os'
 import { isAbsolute, join, parse, resolve, sep } from 'node:path'
 import { isLocationNotFoundError } from '@opencode/client'
 import { openCodeService } from './opencode/service'
+import { spawnSpec } from './toolchain'
 import type { WorktreeRemovalPreflight } from '@shared/types'
 
 const GIT_TIMEOUT = 20_000
@@ -187,10 +188,23 @@ export async function listRegisteredWorktrees(repoDir: string): Promise<RawWorkt
   return out
 }
 
+/**
+ * Raw-byte git run. Path decoding here must be byte-exact, so the output stays a
+ * Buffer; only the launch (cwd, argument paths, WSL wrapper) comes from the
+ * selected command environment.
+ */
 function exec2(file: string, args: string[], opts: { timeout: number; maxBuffer?: number }): Promise<{ stdout: Buffer }> {
-  return new Promise((res, rej) => {
-    execFile(file, args, { ...opts, encoding: 'buffer' }, (err, stdout) => (err ? rej(err) : res({ stdout: stdout as unknown as Buffer })))
-  })
+  return spawnSpec(file, args).then(
+    (spec) =>
+      new Promise((res, rej) => {
+        execFile(
+          spec.file,
+          spec.args,
+          { ...opts, encoding: 'buffer', windowsHide: true, env: { ...process.env, ...spec.env } },
+          (err, stdout) => (err ? rej(err) : res({ stdout: stdout as unknown as Buffer }))
+        )
+      })
+  )
 }
 
 function exec(file: string, args: string[], opts: { timeout: number; maxBuffer?: number }): Promise<{ stdout: string }> {

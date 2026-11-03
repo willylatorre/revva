@@ -7,7 +7,7 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
-- (nothing yet)
+- **Choose where Revva looks for `git`, `gh` and `opencode`** — on Windows those tools were only ever looked up on the Windows PATH, so an `opencode` or `gh` installed inside WSL read as “not found” even though it was there. Setup → Connections now has a **Command environment** picker: Windows (native), any installed WSL distribution, or a custom command prefix. The choice covers all three tools at once, and **Check tools** shows what each one resolves to. With a WSL distribution selected, paths are translated in both directions — `C:\repos\x` becomes `/mnt/c/repos/x` for the tools and the OpenCode service, and service-reported paths come back as Windows paths — so repositories on either side keep working, sessions open in the right folder, and `gh` reads the PRs and remotes it should. The service's registration file is pinned under Revva's own user-data folder so both sides can read it, and `opencode` is resolved through a login shell so version-manager installs (nvm, asdf, volta) are found. A custom prefix is passed through unchanged and gets no path translation; the UI says so.
 
 ## [1.6.0] - 2026-11-03
 

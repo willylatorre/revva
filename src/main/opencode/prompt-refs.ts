@@ -5,6 +5,7 @@
  */
 import { basename, join } from 'node:path'
 import { existsSync } from 'node:fs'
+import { toToolPath } from '../toolchain'
 import type { PromptRefs } from '@shared/types'
 
 const clip = (s: string, max: number): string => (s.length > max ? `${s.slice(0, max)}…` : s)
@@ -28,8 +29,14 @@ export function fileAttachments(refs: PromptRefs, directory: string): Array<{ ur
     // Typing is unvalidated: an email or a typo must not fail the whole prompt.
     .filter(({ abs }) => existsSync(abs))
     .map(({ f, abs }) => ({
-      uri: `file://${encodeURI(abs).replace(/#/g, '%23').replace(/\?/g, '%3F')}`,
+      // The service resolves these URIs, so the path must be in its own space.
+      uri: fileUri(toToolPath(abs)),
       name: basename(abs),
       mention: { start: f.start, end: f.end, text: clip(f.text, 300) }
     }))
+}
+
+/** `file://` URI for a path in either shape, with the reserved characters escaped. */
+function fileUri(path: string): string {
+  return `file://${encodeURI(path).replace(/#/g, '%23').replace(/\?/g, '%3F')}`
 }
