@@ -48,7 +48,7 @@ It orchestrates the user's *own* OpenCode service rather than bundling an assist
 
 - Real screenshot set: `docs/images/` (dashboard, inbox, jira, github, cockpit, scripts) referenced from README.
 - Live product docs: README.md feature list (mirrored in-app under Setup → Features), docs/REQUIREMENTS.md, docs/ARCHITECTURE.md, docs/PIPELINE.md, CHANGELOG.md.
-- Shipped releases with installers on GitHub (RevvitySignals/revva).
+- Shipped releases with installers on GitHub (willylatorre/revva).
 - Absences future work must not fabricate: no external testimonials, case studies, customer logos, benchmarks, or pricing — none exist.
 
 ## Product Principles

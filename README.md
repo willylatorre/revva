@@ -2,7 +2,7 @@
 
 A local Electron desktop app that turns your Jira sprint into shipped, reviewed pull requests — driven by **opencode** sessions you control from one cockpit.
 
-**[Download the latest release](https://github.com/RevvitySignals/revva/releases/latest)** — macOS (Apple Silicon DMG) and Windows (x64 installer).
+**[Download the latest release](https://github.com/willylatorre/revva/releases/latest)** — macOS (Apple Silicon DMG) and Windows (x64 installer).
 
 <p align="center">
   <img src="docs/images/dashboard.png" alt="Revva dashboard: OpenCode health, Jira sprint progress, inbox, pipeline work, PRs and scripts at a glance" width="860">
@@ -128,7 +128,7 @@ This bumps the version, seals the `[Unreleased]` changelog section under the new
 version, commits, tags `vX.Y.Z`, and pushes. The tag triggers
 `.github/workflows/release.yml`, which builds the macOS DMG + ZIP (arm64) and
 the Windows NSIS installer + ZIP (x64) on GitHub runners and publishes them on
-the [Releases page](https://github.com/RevvitySignals/revva/releases)
+the [Releases page](https://github.com/willylatorre/revva/releases)
 with the matching changelog section as release notes. Builds are unsigned for
 now (Developer ID signing can be added later with `CSC_LINK` secrets) — the
 first launch may need right-click → Open on macOS, and Windows SmartScreen
