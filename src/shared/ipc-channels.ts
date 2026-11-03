@@ -5,6 +5,7 @@
 export const IPC = {
   serviceStatus: 'revva:service:status',
   serviceRetry: 'revva:service:retry',
+  toolchainProbe: 'revva:toolchain:probe',
   mcpList: 'revva:mcp:list',
   mcpReconnect: 'revva:mcp:reconnect',
   inventoryAgents: 'revva:inventory:agents',

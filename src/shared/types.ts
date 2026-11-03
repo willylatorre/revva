@@ -70,6 +70,28 @@ export const workspaceSchema = z.object({
 })
 export type Workspace = z.infer<typeof workspaceSchema>
 
+export const toolchainChoiceSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('native') }),
+  z.object({ kind: z.literal('wsl'), distro: z.string() }),
+  z.object({ kind: z.literal('custom'), prefix: z.array(z.string()).min(1) })
+])
+export type ToolchainChoice = z.infer<typeof toolchainChoiceSchema>
+
+export const toolchainProbeSchema = z.object({
+  choice: toolchainChoiceSchema,
+  label: z.string(),
+  distros: z.array(z.string()),
+  translated: z.boolean(),
+  tools: z.array(
+    z.object({
+      name: z.enum(['gh', 'opencode', 'git']),
+      ok: z.boolean(),
+      detail: z.string()
+    })
+  )
+})
+export type ToolchainProbe = z.infer<typeof toolchainProbeSchema>
+
 export const settingsKeySchema = z.enum([
   'generalChat.agentID',
   'generalChat.model',
@@ -88,7 +110,8 @@ export const settingsKeySchema = z.enum([
   'watchdog.staleSecs',
   'cards.pinnedOrder',
   'keepAwake.enabled',
-  'composer.autoSendPaste'
+  'composer.autoSendPaste',
+  'toolchain.environment'
 ])
 export type SettingsKey = z.infer<typeof settingsKeySchema>
 
@@ -943,6 +966,9 @@ export interface RevvaApi {
   service: {
     status(): Promise<ServiceStatus>
     retry(): Promise<ServiceStatus>
+  }
+  toolchain: {
+    probe(): Promise<ToolchainProbe>
   }
   mcp: {
     list(directory?: string): Promise<McpStatus>

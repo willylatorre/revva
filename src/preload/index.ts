@@ -7,6 +7,9 @@ const api: RevvaApi = {
     status: () => ipcRenderer.invoke(IPC.serviceStatus),
     retry: () => ipcRenderer.invoke(IPC.serviceRetry)
   },
+  toolchain: {
+    probe: () => ipcRenderer.invoke(IPC.toolchainProbe)
+  },
   mcp: {
     list: (directory) => ipcRenderer.invoke(IPC.mcpList, directory),
     reconnect: (server, directory) => ipcRenderer.invoke(IPC.mcpReconnect, server, directory)

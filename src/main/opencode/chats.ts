@@ -4,9 +4,8 @@
  * all transcript state lives in OpenCode. Links enable the shared utilities;
  * creating a linked session and tagging one later use the same path.
  */
+import { execTool } from '../toolchain'
 import { randomUUID } from 'node:crypto'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { BrowserWindow } from 'electron'
 import { openCodeService, describeError } from './service'
 import { eventBus, type RawEvent } from './bus'
@@ -48,7 +47,7 @@ function mergePrefixes(history: ChatMessage[], prefixes: ChatMessage[]): ChatMes
   return [...rows.values()].sort((a, b) => a.createdAt - b.createdAt).slice(-200)
 }
 
-const exec = promisify(execFile)
+const exec = execTool
 
 /** Placeholder title for chats the user did not name; replaced by OpenCode's
  *  auto-generated title (from the first message) via `session.renamed`. */

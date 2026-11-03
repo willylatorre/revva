@@ -18,8 +18,7 @@
  * remove` — never `--force`, so git's own guard still protects anything the
  * agent misjudges.
  */
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { execTool } from './toolchain'
 import { existsSync } from 'node:fs'
 import { lstat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
@@ -36,7 +35,7 @@ import {
 } from './worktree-safety'
 import type { RepoBranchList, TaskSessionResult, WorktreeInfo, WorktreeRemovalPreflight } from '@shared/types'
 
-const exec = promisify(execFile)
+const exec = execTool
 
 /** States whose worktree must not be touched from this dialog. */
 const LIVE_STATES = new Set(['READY', 'BUILDING', 'REVIEW', 'FIXING', 'WAITING_HUMAN', 'REWORK'])

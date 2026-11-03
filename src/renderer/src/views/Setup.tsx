@@ -21,7 +21,7 @@ import {
   DEFAULT_PR_DESCRIPTION_PROMPT,
   PROMPT_PLACEHOLDER_HELP
 } from '@shared/prompts'
-import type { PipelineRole, SettingsKey } from '@shared/types'
+import type { PipelineRole, SettingsKey, ToolchainChoice } from '@shared/types'
 
 /**
  * First-run setup + settings (REQ-SETUP-1/2): OpenCode connection status, workspace folders,
@@ -116,9 +116,18 @@ export function SetupView(): React.JSX.Element {
               </div>
               {status.data?.state === 'missing' && (
                 <p className="text-xs text-muted-foreground">
-                  Install OpenCode (https://opencode.ai), make sure the <code>opencode</code> command is on PATH, then Retry.
+                  Install OpenCode (https://opencode.ai) in the selected command environment, or choose a different one below, then Retry.
                 </p>
               )}
+            </section>
+
+            <section className="space-y-2">
+              <h2 className="text-sm font-medium">Command environment</h2>
+              <p className="text-xs text-muted-foreground">
+                Where Revva looks for <code>git</code>, <code>gh</code> and <code>opencode</code>. Pick a WSL distribution
+                when those tools are installed inside WSL rather than on Windows.
+              </p>
+              <ToolchainSection />
             </section>
 
             <section className="space-y-2">
@@ -423,6 +432,128 @@ function InventoryRow({ items, loading }: { items: string[]; loading: boolean })
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+function ToolchainSection(): React.JSX.Element {
+  const qc = useQueryClient()
+  const probe = useQuery({ queryKey: ['toolchain'], queryFn: () => window.revva.toolchain.probe(), staleTime: 30_000 })
+  const [custom, setCustom] = useState('')
+  const [editingCustom, setEditingCustom] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  const current = probe.data?.choice
+  // The select needs one string per option. "Custom…" is a draft state until a
+  // prefix is applied, so it is tracked separately from the saved choice.
+  const selected = !current
+    ? ''
+    : editingCustom
+      ? 'custom'
+      : current.kind === 'native'
+        ? 'native'
+        : current.kind === 'wsl'
+          ? `wsl:${current.distro}`
+          : 'custom'
+
+  const save = async (choice: ToolchainChoice): Promise<void> => {
+    setSaving(true)
+    try {
+      await window.revva.settings.set('toolchain.environment', choice)
+      await qc.invalidateQueries({ queryKey: ['toolchain'] })
+      // The service re-attaches in the new environment; status follows it.
+      const status = await window.revva.service.retry()
+      qc.setQueryData(['service-status'], status)
+      setEditingCustom(false)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const onSelect = (value: string): void => {
+    if (value === 'native') return void save({ kind: 'native' })
+    if (value.startsWith('wsl:')) return void save({ kind: 'wsl', distro: value.slice(4) })
+    // Custom: open the prefix field; nothing is saved until Apply.
+    setEditingCustom(true)
+    if (current?.kind === 'custom') setCustom(current.prefix.join(' '))
+  }
+
+  const applyCustom = (): void => {
+    const prefix = custom.trim().split(/\s+/).filter(Boolean)
+    if (prefix.length) void save({ kind: 'custom', prefix })
+    else setEditingCustom(false)
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <Select value={selected} onValueChange={onSelect} disabled={saving || probe.isLoading}>
+          <SelectTrigger size="sm" className="min-w-56" aria-label="Command environment">
+            <SelectValue placeholder="Detecting…" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="native">Windows (native)</SelectItem>
+            {probe.data?.distros.map((distro) => (
+              <SelectItem key={distro} value={`wsl:${distro}`}>
+                WSL — {distro}
+              </SelectItem>
+            ))}
+            {probe.data?.distros.length === 0 && (
+              <SelectItem value="wsl:" disabled>
+                WSL — no distribution found
+              </SelectItem>
+            )}
+            <SelectItem value="custom">Custom command…</SelectItem>
+          </SelectContent>
+        </Select>
+        <Button size="sm" variant="outline" disabled={probe.isFetching} onClick={() => void probe.refetch()}>
+          {probe.isFetching ? 'Checking…' : 'Check tools'}
+        </Button>
+      </div>
+
+      {selected === 'custom' && (
+        <div className="flex gap-2">
+          <Input
+            placeholder="wsl.exe -d Ubuntu --"
+            value={custom}
+            onChange={(e) => setCustom(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && applyCustom()}
+            className="font-mono text-xs"
+          />
+          <Button size="sm" variant="outline" disabled={saving || !custom.trim()} onClick={applyCustom}>
+            Apply
+          </Button>
+        </div>
+      )}
+
+      {probe.data && (
+        <div className="space-y-1 rounded-md border p-2.5">
+          {probe.data.tools.map((tool) => (
+            <div key={tool.name} className="flex items-start gap-2 text-xs">
+              {tool.ok ? (
+                <CircleCheck className="mt-0.5 size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+              ) : (
+                <CircleX className="mt-0.5 size-3.5 shrink-0 text-destructive" />
+              )}
+              <span className="font-mono">{tool.name}</span>
+              <span className="min-w-0 truncate text-muted-foreground">{tool.detail}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <p className="text-xs text-muted-foreground">
+        {probe.data?.translated
+          ? 'Paths are translated between Windows and WSL, so repositories on either side keep working.'
+          : 'Repositories and the OpenCode service are used exactly as the tools report them.'}
+      </p>
+      {selected === 'custom' && (
+        <p className="text-xs text-muted-foreground">
+          A custom prefix is passed through unchanged and gets no path translation. Prefer a WSL distribution when the
+          tools cannot see your Windows paths.
+        </p>
+      )}
+      {probe.error instanceof Error && <p className="text-xs text-destructive">{probe.error.message}</p>}
     </div>
   )
 }

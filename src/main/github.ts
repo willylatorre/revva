@@ -6,9 +6,8 @@
  * Review flow: fetch PR detail → reuse (or clone) the repo under a workspaces root →
  * detached worktree at the PR head → read-only review session seeded with the tuned prompt.
  */
-import { execFile } from 'node:child_process'
+import { execTool } from './toolchain'
 import { randomUUID } from 'node:crypto'
-import { promisify } from 'node:util'
 import { existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { app, BrowserWindow, Notification } from 'electron'
@@ -21,7 +20,7 @@ import { parsePrRef, repoFromGitRemote } from '@shared/pr-ref'
 import { ticketKeyFromText } from '@shared/ticket-key'
 import { IPC, type PrAlert, type PrMergeMethod, type PrDetail, type PrStack, type PullRequest, type TaskSessionResult } from '@shared/types'
 
-const exec = promisify(execFile)
+const exec = execTool
 
 async function gh(args: string[], cwd?: string, opts?: { timeoutMs?: number }): Promise<{ ok: boolean; out: string; err: string; code: number }> {
   return run('gh', args, cwd, opts)

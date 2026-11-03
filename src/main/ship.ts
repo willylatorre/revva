@@ -6,8 +6,7 @@
  * Jira: shipping never changes a ticket's status. An open PR says nothing about testability,
  * so the status move is the user's call — the board has a Ready to Test button for it.
  */
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { execTool } from './toolchain'
 import { shell } from 'electron'
 import { getDb } from './db'
 import { jiraMcp } from './jira/mcp'
@@ -15,7 +14,7 @@ import { workManager } from './pipeline/works'
 import { mergeRevvaSection } from '@shared/pr-description'
 import type { ShipCheck, ShipResult } from '@shared/types'
 
-const exec = promisify(execFile)
+const exec = execTool
 
 /** Push runs the repo's pre-push hook (lint, dep scans, tests, builds). Those are
  *  minutes-long by design, so the ordinary 60s command budget guarantees a kill. */

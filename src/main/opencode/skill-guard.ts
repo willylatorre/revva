@@ -19,6 +19,7 @@
  */
 import { realpathSync } from 'node:fs'
 import { openCodeService } from './service'
+import { toToolPath } from '../toolchain'
 
 export type SkillGuardRule = { action: string; resource: string; effect: 'allow' | 'deny' | 'ask' }
 
@@ -35,9 +36,11 @@ const real = (p: string): string => {
 
 async function rulesFor(dir: string): Promise<SkillGuardRule[]> {
   const res = await openCodeService.api.skill.list({ location: { directory: dir } })
-  const root = real(dir).replace(/\/+$/, '') + '/'
+  // Skill paths come back in the service's own space; compare there, not with
+  // the Windows form of the session directory.
+  const root = toToolPath(real(dir)).replace(/\/+$/, '') + '/'
   return res.data
-    .filter((s) => real(s.path).startsWith(root))
+    .filter((s) => toToolPath(real(s.path)).startsWith(root))
     .map((s) => ({ action: 'skill', resource: s.id, effect: 'deny' as const }))
 }
 

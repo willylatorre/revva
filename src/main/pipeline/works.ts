@@ -6,9 +6,8 @@
  * M1 scope: READY → BUILDING with a live session. Review/ship phases arrive in M4/M5;
  * the state machine fields are already persisted so resume works from day one.
  */
+import { execTool } from '../toolchain'
 import { randomUUID } from 'node:crypto'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { existsSync } from 'node:fs'
 import { mkdir, realpath } from 'node:fs/promises'
 import { join, basename, dirname, resolve } from 'node:path'
@@ -48,7 +47,7 @@ import { agentAttachments, fileAttachments, skillAttachments } from '../opencode
 import { coordinator } from '../opencode/coordinator'
 import { skillGuardRules } from '../opencode/skill-guard'
 
-const exec = promisify(execFile)
+const exec = execTool
 
 interface WorkRow {
   id: string

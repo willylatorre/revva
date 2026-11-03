@@ -9,8 +9,7 @@
  * - Verdict protocol: reviewer's LAST line must be `VERDICT: APPROVED` or `VERDICT: CHANGES`.
  * - Fixer is a single session with the consolidated findings; rounds are bounded (default 3).
  */
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { execTool } from './toolchain'
 import { realpath } from 'node:fs/promises'
 import { BrowserWindow } from 'electron'
 import { openCodeService, describeError } from './opencode/service'
@@ -39,7 +38,7 @@ import {
   type ReviewStatus
 } from '@shared/types'
 
-const exec = promisify(execFile)
+const exec = execTool
 
 /**
  * Watchdog: a reviewer/fixer session stuck this long is errored out. The rigor

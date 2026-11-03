@@ -8,41 +8,39 @@
 import { Service, type Endpoint } from '@opencode/client/service'
 import { OpenCode } from '@opencode/client'
 import { app } from 'electron'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import type { ServiceStatus } from '@shared/types'
 import { pushToWindows } from '../push'
-
-const execFileAsync = promisify(execFile)
+import { bridgeClient } from './path-bridge'
+import { openCodeAvailable, prepareProcessEnv, primePaths, serviceStateEnv, serviceStateFile, spawnSpec } from '../toolchain'
 
 type Listener = (status: ServiceStatus) => void
 
-let windowsCommand: Promise<string[] | undefined> | undefined
+let serviceCommand: Promise<{ command: string[]; file?: string }> | undefined
 
 /**
- * npm-installed `opencode` on Windows is an `opencode.cmd` shim, and Node refuses
- * to spawn `.cmd`/`.bat` without a shell (CVE-2024-27980) — the bare
- * `spawn('opencode', …)` in @opencode/client then dies with EINVAL even though
- * opencode IS installed. Resolve `opencode` on PATH once: a native `.exe` spawns
- * directly; a `.cmd`/`.bat` shim is wrapped in cmd.exe. Nothing found keeps the
- * default behavior so the friendly "install it" hint still surfaces.
+ * How to start `opencode serve --service` in the environment the user chose.
+ *
+ * A native Windows npm install is an `opencode.cmd` shim, and Node refuses to
+ * spawn `.cmd`/`.bat` without a shell (CVE-2024-27980) — `spawnSpec` resolves
+ * that case. A WSL choice routes through `wsl.exe`, which is resolved to an
+ * absolute Linux path because version managers only put their shims on an
+ * interactive PATH.
  */
-function windowsServiceCommand(): Promise<string[] | undefined> {
-  if (process.platform !== 'win32') return Promise.resolve(undefined)
-  windowsCommand ??= (async () => {
-    try {
-      const { stdout } = await execFileAsync('where.exe', ['opencode'], { windowsHide: true, timeout: 10_000 })
-      const found = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-      const exe = found.find((p) => /\.exe$/i.test(p))
-      if (exe) return [exe, 'serve', '--service']
-      const shim = found.find((p) => /\.(cmd|bat)$/i.test(p))
-      if (shim) return ['cmd.exe', '/d', '/s', '/c', `"${shim}" serve --service`]
-    } catch {
-      // not on PATH — fall through to the client's default spawn
-    }
-    return undefined
+function serviceSpawn(): Promise<{ command: string[]; file?: string }> {
+  serviceCommand ??= (async () => {
+    prepareProcessEnv()
+    // Translation must be ready before the first request or event arrives.
+    await primePaths()
+    const state = await serviceStateEnv(app.getPath('userData'))
+    const spec = await spawnSpec('opencode', ['serve', '--service'], { env: state })
+    return { command: [spec.file, ...spec.args], ...serviceStateFile(app.getPath('userData')) }
   })()
-  return windowsCommand
+  return serviceCommand
+}
+
+/** Forget the derived launch command; the next ensure() re-reads the setting. */
+export function resetServiceSpawn(): void {
+  serviceCommand = undefined
 }
 
 export class OpenCodeService {
@@ -77,9 +75,16 @@ export class OpenCodeService {
   async ensure(): Promise<ServiceStatus> {
     this.setStatus({ state: 'connecting', lastCheckedAt: Date.now(), message: undefined })
     try {
-      const command = await windowsServiceCommand()
+      const available = await openCodeAvailable()
+      if (!available.ok) {
+        this.setStatus({ state: 'missing', lastCheckedAt: Date.now(), message: available.detail })
+        this.scheduleHealthCheck()
+        return this.status
+      }
+      const spawn = await serviceSpawn()
       const endpoint = await Service.ensure({
-        ...(command ? { command } : {}),
+        command: spawn.command,
+        ...(spawn.file ? { file: spawn.file } : {}),
         onStart: (reason) => {
           this.setStatus({
             state: 'connecting',
@@ -89,7 +94,7 @@ export class OpenCodeService {
         }
       })
       this.endpoint = endpoint
-      const client = OpenCode.make({ baseUrl: endpoint.url, headers: Service.headers(endpoint) })
+      const client = bridgeClient(OpenCode.make({ baseUrl: endpoint.url, headers: Service.headers(endpoint) }))
       const info = await client.server.info()
       this.client = client
       this.setStatus({ state: 'connected', url: endpoint.url, version: info.version, lastCheckedAt: Date.now() })
@@ -98,12 +103,12 @@ export class OpenCodeService {
       this.client = undefined
       this.endpoint = undefined
       const message = describeError(err)
-      const missing = /ENOENT|not found|spawn/i.test(message)
+      const missing = /ENOENT|not found|spawn|command not found|No such file/i.test(message)
       this.setStatus({
         state: missing ? 'missing' : 'error',
         lastCheckedAt: Date.now(),
         message: missing
-          ? 'OpenCode was not found on this machine. Install it (https://opencode.ai) and retry.'
+          ? 'OpenCode was not found in the selected command environment. Install it there (https://opencode.ai) or pick another environment in Setup.'
           : message
       })
       this.scheduleHealthCheck()
