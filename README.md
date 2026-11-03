@@ -129,10 +129,18 @@ version, commits, tags `vX.Y.Z`, and pushes. The tag triggers
 `.github/workflows/release.yml`, which builds the macOS DMG + ZIP (arm64) and
 the Windows NSIS installer + ZIP (x64) on GitHub runners and publishes them on
 the [Releases page](https://github.com/willylatorre/revva/releases)
-with the matching changelog section as release notes. Builds are unsigned for
-now (Developer ID signing can be added later with `CSC_LINK` secrets) — the
+with the matching changelog section as release notes. Builds are ad-hoc signed
+(no Developer ID yet — that can be added later with `CSC_LINK` secrets), so the
 first launch may need right-click → Open on macOS, and Windows SmartScreen
-offers "More info → Run anyway".
+offers "More info → Run anyway". Ad-hoc signing matters on Apple Silicon: an
+unsigned bundle is refused with *"Revva is damaged and can't be opened"*, which
+right-click → Open cannot bypass.
+
+If macOS has already quarantined the app, clear the flag once:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Revva.app
+```
 
 Windows caveats: Jira OAuth, chats, pipelines and the GitHub tab all work
 (tokens land in the Windows Credential store via `safeStorage`). The **Scripts

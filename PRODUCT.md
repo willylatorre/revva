@@ -25,7 +25,7 @@ It orchestrates the user's *own* OpenCode service rather than bundling an assist
 - The user's machine: their OpenCode service, `gh`/`gh-stack` CLI, git worktrees under workspace folders the user authorizes, AWS/SSO routines run as opaque user shell scripts (Revva does not model what they do).
 - Jira Cloud via Revva's own OAuth connection (never another app's token cache); GitHub via `gh`.
 - Long autonomous runs are the norm: keep-awake toggle, triage inbox for questions/permissions/finished runs, live streaming transcripts.
-- Windows and macOS (Apple Silicon) are the shipped targets; builds are unsigned for now.
+- Windows and macOS (Apple Silicon) are the shipped targets; builds are ad-hoc signed (no Developer ID) for now.
 
 ## Capabilities and Constraints
 

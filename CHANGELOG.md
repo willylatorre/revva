@@ -7,6 +7,8 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
+- **macOS builds open now instead of reporting "Revva is damaged and can't be opened"** — the release build had no Developer ID identity available, so electron-builder skipped signing entirely and shipped a linker-signed stub. Every arm64 download since 1.6.0 was rejected by macOS as damaged, and right-click → Open cannot bypass that. Builds are now ad-hoc signed, which yields a valid bundle: Gatekeeper still warns about an unidentified developer, but the app opens after right-click → Open. If a copy was already quarantined, `xattr -dr com.apple.quarantine /Applications/Revva.app` clears it.
+
 - (nothing yet)
 
 ## [1.7.0] - 2026-11-03

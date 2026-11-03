@@ -14,6 +14,10 @@ asarUnpack:
   - node_modules/better-sqlite3/**
 mac:
   icon: build/icon.icns
+  # No Developer ID identity exists, so electron-builder would skip signing entirely
+  # and leave a linker-signed stub that Apple Silicon reports as "damaged".
+  # Ad-hoc signing ("-") yields a structurally valid bundle so right-click → Open works.
+  identity: "-"
   category: public.app-category.developer-tools
   files:
     - '!node_modules/better-sqlite3/prebuilds/{win*,linux*}.node'
