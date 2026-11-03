@@ -7,6 +7,10 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
+- (nothing yet)
+
+## [1.6.0] - 2026-11-03
+
 - **The project moved to `willylatorre/revva`** — release links, the in-app changelog button, the README download/releases links and the release script now point at the new GitHub home.
 - **A failed push now tells you what actually failed, and every failed button in a ticket/PR chat can hand the error to the agent** — the Ship button ran `git push` under a 60-second command budget, so any repo with a real `pre-push` hook (lint, dependency scans, tests, builds — the ones that print screens of "Success! No dependency issues found") was killed mid-hook and reported as `git push failed:` followed by the hook's *successful* output and nothing else. Push now gets a 45-minute budget (Ship, rework, PR-head push and rebase alike), reports the **tail** of the output where the hook's verdict actually is, and says plainly when the budget ran out instead of blaming git. Every error surface inside a conversation — Ship, the PR menu, review start/stop/relaunch, "Full review", Tackle comments, and moving the checkout — now carries a recognizable warning-bubble button that sends the exact error to that conversation and asks the agent to fix the cause rather than retry blindly. Sending dismisses the dialog, menu or popover it was sitting in, so a stale error never stays on screen.
 
