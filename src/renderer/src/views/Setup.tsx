@@ -116,7 +116,8 @@ export function SetupView(): React.JSX.Element {
               </div>
               {status.data?.state === 'missing' && (
                 <p className="text-xs text-muted-foreground">
-                  Install OpenCode (https://opencode.ai) in the selected command environment, or choose a different one below, then Retry.
+                  Revva needs OpenCode V2 (https://opencode.ai). Install it in the selected command environment, or choose a
+                  different one below, then Retry. V1 is not supported.
                 </p>
               )}
             </section>

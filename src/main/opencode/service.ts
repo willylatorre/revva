@@ -11,14 +11,18 @@ import { app } from 'electron'
 import type { ServiceStatus } from '@shared/types'
 import { pushToWindows } from '../push'
 import { bridgeClient } from './path-bridge'
-import { openCodeAvailable, prepareProcessEnv, primePaths, serviceStateEnv, serviceStateFile, spawnSpec } from '../toolchain'
+import { isSupportedVersion, openCodeAvailable, prepareProcessEnv, primePaths, serviceRegistrationFile, serviceStateEnv, spawnSpec } from '../toolchain'
 
 type Listener = (status: ServiceStatus) => void
 
-let serviceCommand: Promise<{ command: string[]; file?: string }> | undefined
+let serviceCommand: { binary: string; value: Promise<{ command: string[]; file?: string }> } | undefined
 
 /**
  * How to start `opencode serve --service` in the environment the user chose.
+ *
+ * The command name is discovered, not assumed: `openCodeAvailable()` only
+ * accepts an OpenCode V2 binary, because V1 has no `--service` flag and an
+ * incompatible HTTP API. V2 may be installed as `opencode2` beside V1.
  *
  * A native Windows npm install is an `opencode.cmd` shim, and Node refuses to
  * spawn `.cmd`/`.bat` without a shell (CVE-2024-27980) — `spawnSpec` resolves
@@ -26,16 +30,22 @@ let serviceCommand: Promise<{ command: string[]; file?: string }> | undefined
  * absolute Linux path because version managers only put their shims on an
  * interactive PATH.
  */
-function serviceSpawn(): Promise<{ command: string[]; file?: string }> {
-  serviceCommand ??= (async () => {
+function serviceSpawn(binary: string): Promise<{ command: string[]; file?: string }> {
+  // A different binary needs a different launch command, so the cache is keyed.
+  if (serviceCommand?.binary === binary) return serviceCommand.value
+  const value = (async () => {
     prepareProcessEnv()
     // Translation must be ready before the first request or event arrives.
     await primePaths()
     const state = await serviceStateEnv(app.getPath('userData'))
-    const spec = await spawnSpec('opencode', ['serve', '--service'], { env: state })
-    return { command: [spec.file, ...spec.args], ...serviceStateFile(app.getPath('userData')) }
+    const spec = await spawnSpec(binary, ['serve', '--service'], { env: state })
+    // A wrapper with its own state directory registers elsewhere, so ask V2
+    // where it will write instead of assuming the pinned path.
+    const file = await serviceRegistrationFile(app.getPath('userData'), binary, state)
+    return { command: [spec.file, ...spec.args], ...(file ? { file } : {}) }
   })()
-  return serviceCommand
+  serviceCommand = { binary, value }
+  return value
 }
 
 /** Forget the derived launch command; the next ensure() re-reads the setting. */
@@ -76,15 +86,18 @@ export class OpenCodeService {
     this.setStatus({ state: 'connecting', lastCheckedAt: Date.now(), message: undefined })
     try {
       const available = await openCodeAvailable()
-      if (!available.ok) {
+      if (!available.ok || !available.command) {
         this.setStatus({ state: 'missing', lastCheckedAt: Date.now(), message: available.detail })
         this.scheduleHealthCheck()
         return this.status
       }
-      const spawn = await serviceSpawn()
+      const spawn = await serviceSpawn(available.command)
       const endpoint = await Service.ensure({
         command: spawn.command,
         ...(spawn.file ? { file: spawn.file } : {}),
+        // Belt and braces: a registered service that is not V2 or newer would
+        // speak an incompatible API, so replace it instead of attaching to it.
+        version: (version) => isSupportedVersion(version),
         onStart: (reason) => {
           this.setStatus({
             state: 'connecting',
@@ -108,7 +121,7 @@ export class OpenCodeService {
         state: missing ? 'missing' : 'error',
         lastCheckedAt: Date.now(),
         message: missing
-          ? 'OpenCode was not found in the selected command environment. Install it there (https://opencode.ai) or pick another environment in Setup.'
+          ? 'OpenCode was not found in the selected command environment. Install OpenCode V2 there (https://opencode.ai) or pick another environment in Setup.'
           : message
       })
       this.scheduleHealthCheck()
