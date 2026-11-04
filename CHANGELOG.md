@@ -7,6 +7,10 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
+- (nothing yet)
+
+## [1.9.0] - 2026-11-04
+
 - **Every conversation can now show OpenCode's own interface instead of Revva's chat view** — the chat header has a **Console** toggle. It swaps Revva's transcript and composer for OpenCode V2's own web interface, opened on the same session, so a message written there appears in Revva and the other way around. The toggle is per conversation and never changes another chat's view. Switching back is one click, and nothing is duplicated or copied between the two views.
 
   Revva pairs with the running local service to get the interface's session cookie, and keeps that cookie in a memory-only browser session: it is never written to disk. The embedded page runs with no Node access, cannot open popups, and may only navigate inside the local service — any other link opens in your normal browser. If the service is restarted, pairing is refreshed automatically; if the page still fails to load, the panel says so and offers **Try again** and **Open in browser**.
