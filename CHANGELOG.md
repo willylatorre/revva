@@ -7,7 +7,7 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
-- (nothing yet)
+- **Reviewing a PR no longer fails with an empty `git clone failed:`** — starting a review clones the PR's repository into a shared checkout under the worktrees root on first use, and that clone ran on the ordinary 60-second command budget. A large repository (or any clone writing onto a Windows drive through WSL) outlived it, was killed mid-transfer, and the killed process printed nothing on stderr — so the error you saw was the prefix and nothing else. Clones now get 30 minutes and PR-head fetches 10, a killed command says it ran out of time instead of blaming git, and a failed or interrupted clone is staged in a sibling folder and only moved into place when it succeeds. A half-written checkout can no longer be mistaken for a finished one, and a folder left behind by an earlier failure is moved aside on the next attempt instead of blocking it.
 
 ## [1.9.0] - 2026-11-04
 

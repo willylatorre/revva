@@ -8,7 +8,7 @@
  */
 import { execTool } from './toolchain'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { app, BrowserWindow, Notification } from 'electron'
 import { openCodeService, describeError } from './opencode/service'
@@ -35,6 +35,13 @@ async function git(cwd: string, args: string[], opts?: { timeoutMs?: number }): 
  *  ordinary 60s budget would kill them mid-hook and look like a git refusal. */
 const PUSH_TIMEOUT_MS = 45 * 60_000
 
+/** Cloning a large repo into a Windows drive through WSL takes minutes; the
+ *  ordinary 60s budget killed it silently and left a half-written checkout. */
+const CLONE_TIMEOUT_MS = 30 * 60_000
+
+/** A PR head fetch on a big repo can also outrun the ordinary 60s budget. */
+const FETCH_TIMEOUT_MS = 10 * 60_000
+
 /** The hook's verdict is the LAST line it printed, not the head of successful scans. */
 function pushErrorTail(out: string, err: string): string {
   const output = (err || out).trim()
@@ -46,8 +53,18 @@ async function run(cmd: string, args: string[], cwd?: string, opts?: { timeoutMs
     const res = await exec(cmd, args, { cwd, timeout: opts?.timeoutMs ?? 60_000, maxBuffer: 16 * 1024 * 1024 })
     return { ok: true, out: res.stdout, err: res.stderr, code: 0 }
   } catch (err) {
-    const e = err as { stdout?: string; stderr?: string; message?: string; code?: number }
-    return { ok: false, out: e.stdout ?? '', err: e.stderr ?? e.message ?? String(err), code: typeof e.code === 'number' ? e.code : 1 }
+    const e = err as { stdout?: string; stderr?: string; message?: string; code?: number; killed?: boolean; signal?: string }
+    // A command killed at its budget prints nothing on stderr; `execTool` always
+    // sets stderr, so an empty string must fall back to Node's own message or the
+    // caller reports an empty failure like "git clone failed: ".
+    const detail = (e.stderr ?? '').trim() || (e.message ?? '').trim() || String(err)
+    const timedOut = !!e.killed && (e.signal === 'SIGTERM' || e.signal === 'SIGKILL')
+    return {
+      ok: false,
+      out: e.stdout ?? '',
+      err: timedOut ? `${detail} (timed out after ${Math.round((opts?.timeoutMs ?? 60_000) / 1000)}s)` : detail,
+      code: typeof e.code === 'number' ? e.code : 1
+    }
   }
 }
 
@@ -265,6 +282,7 @@ class GitHubManager {
         updatedAt: Date.parse(r.updatedAt ?? '') || Date.now(),
         commentsCount: r.commentsCount
       }))
+    for (const pr of prs) pr.ticketKey = this.ticketForRow(pr)
     const enriched = await this.enrich(prs)
     if (scope === 'mine') {
       if (enriched) {
@@ -476,6 +494,49 @@ class GitHubManager {
     return ticketKeyFromText(pr.title) ?? ticketKeyFromText(pr.headRefName)
   }
 
+  /** Same resolution for a list row, so a PR card can show its ticket without a detail fetch. */
+  private ticketForRow(pr: PullRequest): string | undefined {
+    const linked = getDb().prepare('SELECT DISTINCT ticket_key FROM work WHERE pr_url = ?').all(pr.url) as Array<{ ticket_key: string }>
+    if (linked.length > 1) return undefined
+    return linked[0]?.ticket_key || ticketKeyFromText(pr.title) || ticketKeyFromText(pr.headRefName) || undefined
+  }
+
+  /**
+   * Checkout of `owner/name` under the gh-reviews root, cloned on first use.
+   * The clone is staged in a sibling folder and renamed into place only after it
+   * succeeds, so a killed or failed clone never leaves a half-repo that would
+   * later read as a valid checkout. A folder left by an earlier failed clone is
+   * moved aside (to `<name>-incomplete`) instead of blocking the new clone.
+   */
+  private async ensureReviewClone(owner: string, name: string, reposDir: string): Promise<string> {
+    const repoDir = join(reposDir, name)
+    if (existsSync(join(repoDir, '.git'))) return repoDir
+    if (existsSync(repoDir)) {
+      const aside = `${repoDir}-incomplete`
+      rmSync(aside, { recursive: true, force: true })
+      try {
+        renameSync(repoDir, aside)
+      } catch {
+        throw new Error(`Could not move the incomplete folder at ${repoDir} aside to clone ${owner}/${name}.`)
+      }
+    }
+    const staging = `${repoDir}-cloning`
+    rmSync(staging, { recursive: true, force: true })
+    try {
+      const clone = await gh(['repo', 'clone', `${owner}/${name}`, staging, '--', '--quiet'], undefined, {
+        timeoutMs: CLONE_TIMEOUT_MS
+      })
+      if (!clone.ok) {
+        throw new Error(`git clone failed: ${(clone.err || clone.out).slice(0, 300) || 'gh exited without a message'}`)
+      }
+      renameSync(staging, repoDir)
+    } catch (err) {
+      rmSync(staging, { recursive: true, force: true })
+      throw err
+    }
+    return repoDir
+  }
+
   /** Start from the current PR head in a new worktree; never modify another checkout. */
   async solveConflicts(prUrl: string): Promise<TaskSessionResult> {
     const pr = await this.detail(prUrl)
@@ -486,11 +547,7 @@ class GitHubManager {
     const root = settingGet<string>('worktreeRoot') || join(app.getPath('home'), `${basename(app.getPath('home'))}-worktrees`)
     const reposDir = join(root, 'gh-reviews', owner)
     mkdirSync(reposDir, { recursive: true })
-    const repoDir = join(reposDir, name)
-    if (!existsSync(join(repoDir, '.git'))) {
-      const clone = await gh(['repo', 'clone', pr.repo, repoDir, '--', '--quiet'])
-      if (!clone.ok) throw new Error(`git clone failed: ${(clone.err || clone.out).slice(0, 300)}`)
-    }
+    const repoDir = await this.ensureReviewClone(owner, name, reposDir)
     const remote = await git(repoDir, ['remote', 'get-url', 'origin'])
     if (!remote.ok || repoFromGitRemote(remote.out)?.toLowerCase() !== pr.repo.toLowerCase()) {
       throw new Error(`The existing checkout at ${repoDir} does not have ${pr.repo} as its origin.`)
@@ -498,7 +555,7 @@ class GitHubManager {
 
     const id = randomUUID()
     const ref = `refs/revva/conflicts/${id}`
-    const fetch = await git(repoDir, ['fetch', '--no-tags', 'origin', `pull/${pr.number}/head:${ref}`])
+    const fetch = await git(repoDir, ['fetch', '--no-tags', 'origin', `pull/${pr.number}/head:${ref}`], { timeoutMs: FETCH_TIMEOUT_MS })
     if (!fetch.ok) throw new Error(`Could not fetch PR head: ${(fetch.err || fetch.out).slice(0, 300)}`)
     const branch = `revva/conflicts-pr${pr.number}-${id}`
     const worktreeDir = join(reposDir, `${name}-conflicts-pr${pr.number}-${id}`)
@@ -550,14 +607,10 @@ class GitHubManager {
       const root = settingGet<string>('worktreeRoot') || join(app.getPath('home'), `${basename(app.getPath('home'))}-worktrees`)
       const reposDir = join(root, 'gh-reviews', owner)
       mkdirSync(reposDir, { recursive: true })
-      const repoDir = join(reposDir, name)
-      if (!existsSync(join(repoDir, '.git'))) {
-        const clone = await gh(['repo', 'clone', pr.repo, repoDir, '--', '--quiet'])
-        if (!clone.ok) throw new Error(`git clone failed: ${(clone.err || clone.out).slice(0, 300)}`)
-      }
+      const repoDir = await this.ensureReviewClone(owner, name, reposDir)
       const id = randomUUID()
       const ref = `refs/revva/comments/${id}`
-      const fetch = await git(repoDir, ['fetch', '--no-tags', 'origin', `pull/${pr.number}/head:${ref}`])
+      const fetch = await git(repoDir, ['fetch', '--no-tags', 'origin', `pull/${pr.number}/head:${ref}`], { timeoutMs: FETCH_TIMEOUT_MS })
       if (!fetch.ok) throw new Error(`Could not fetch PR head: ${(fetch.err || fetch.out).slice(0, 300)}`)
       const branch = `revva/comments-pr${pr.number}-${id}`
       const worktreeDir = join(reposDir, `${name}-comments-pr${pr.number}-${id}`)
@@ -628,14 +681,10 @@ class GitHubManager {
     const root = settingGet<string>('worktreeRoot') || join(app.getPath('home'), `${basename(app.getPath('home'))}-worktrees`)
     const reposDir = join(root, 'gh-reviews', pr.repo.split('/')[0]!)
     mkdirSync(reposDir, { recursive: true })
-    const repoDir = join(reposDir, pr.repo.split('/')[1]!)
-    if (!existsSync(join(repoDir, '.git'))) {
-      const clone = await gh(['repo', 'clone', pr.repo, repoDir, '--', '--quiet'])
-      if (!clone.ok) throw new Error(`git clone failed: ${(clone.err || clone.out).slice(0, 300)}`)
-    }
-    const fetchHead = await git(repoDir, ['fetch', 'origin', `pull/${pr.number}/head:revva/rebase-${pr.number}`])
+    const repoDir = await this.ensureReviewClone(pr.repo.split('/')[0]!, pr.repo.split('/')[1]!, reposDir)
+    const fetchHead = await git(repoDir, ['fetch', 'origin', `pull/${pr.number}/head:revva/rebase-${pr.number}`], { timeoutMs: FETCH_TIMEOUT_MS })
     if (!fetchHead.ok) throw new Error(`git fetch of PR head failed: ${fetchHead.err.slice(0, 300)}`)
-    const fetchBase = await git(repoDir, ['fetch', 'origin', pr.baseRefName])
+    const fetchBase = await git(repoDir, ['fetch', 'origin', pr.baseRefName], { timeoutMs: FETCH_TIMEOUT_MS })
     if (!fetchBase.ok) throw new Error(`git fetch of ${pr.baseRefName} failed: ${fetchBase.err.slice(0, 300)}`)
 
     const worktreeDir = join(reposDir, `${pr.repo.split('/')[1]}-rebase-pr${pr.number}`)
@@ -762,20 +811,15 @@ class GitHubManager {
     const root = settingGet<string>('worktreeRoot') || join(app.getPath('home'), `${basename(app.getPath('home'))}-worktrees`)
     const reposDir = join(root, 'gh-reviews', pr.repo.split('/')[0]!)
     mkdirSync(reposDir, { recursive: true })
-    const repoDir = join(reposDir, pr.repo.split('/')[1]!)
+    const repoDir = await this.ensureReviewClone(pr.repo.split('/')[0]!, pr.repo.split('/')[1]!, reposDir)
 
-    // Clone bare-ish on first use; fetch the PR head always.
-    if (!existsSync(join(repoDir, '.git'))) {
-      const clone = await gh(['repo', 'clone', pr.repo, repoDir, '--', '--quiet'])
-      if (!clone.ok) throw new Error(`git clone failed: ${(clone.err || clone.out).slice(0, 300)}`)
-    }
     const branch = `revva/pr-${pr.number}`
     await git(repoDir, ['worktree', 'prune'])
     const existing = await git(repoDir, ['worktree', 'list', '--porcelain'])
     const alreadyAdded = existing.ok && existing.out.includes(join(reposDir, `${pr.repo.split('/')[1]}-pr${pr.number}`))
     const worktreeDir = join(reposDir, `${pr.repo.split('/')[1]}-pr${pr.number}`)
     if (!alreadyAdded) {
-      const fetch = await git(repoDir, ['fetch', 'origin', `pull/${pr.number}/head:${branch}`])
+      const fetch = await git(repoDir, ['fetch', 'origin', `pull/${pr.number}/head:${branch}`], { timeoutMs: FETCH_TIMEOUT_MS })
       if (!fetch.ok) throw new Error(`git fetch of PR head failed: ${fetch.err.slice(0, 300)}`)
       const add = await git(repoDir, ['worktree', 'add', '--detach', worktreeDir, branch])
       if (!add.ok) throw new Error(`git worktree add failed: ${add.err.slice(0, 300)}`)
