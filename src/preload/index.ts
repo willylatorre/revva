@@ -71,7 +71,8 @@ const api: RevvaApi = {
     agentActivity: () => ipcRenderer.invoke(IPC.sessionAgentActivity),
     queue: (sessionId) => ipcRenderer.invoke(IPC.sessionQueue, sessionId),
     cancelQueued: (sessionId, inboxId) => ipcRenderer.invoke(IPC.sessionQueueCancel, sessionId, inboxId),
-    promoteQueued: (sessionId, inboxId) => ipcRenderer.invoke(IPC.sessionQueuePromote, sessionId, inboxId)
+    promoteQueued: (sessionId, inboxId) => ipcRenderer.invoke(IPC.sessionQueuePromote, sessionId, inboxId),
+    openCodeUi: (sessionId) => ipcRenderer.invoke(IPC.sessionOpenCodeUi, sessionId)
   },
   worktrees: {
     list: (input) => ipcRenderer.invoke(IPC.worktreeList, input),

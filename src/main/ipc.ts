@@ -10,6 +10,7 @@ import { IPC, settingsKeySchema, toolchainChoiceSchema, chatCreateInputSchema, m
 import { keepAwake } from './keep-awake'
 import { detectDictationApps } from './dictation'
 import { openCodeService, resetServiceSpawn } from './opencode/service'
+import { openCodeUiFor } from './opencode/ui'
 import { chatManager } from './opencode/chats'
 import { agentSessions } from './opencode/agent-sessions'
 import { agentActivityMeter } from './opencode/agent-activity'
@@ -322,6 +323,7 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.sessionQueuePromote, (_e, sessionId: string, inboxId: string) =>
     chatManager.promoteQueued(String(sessionId), String(inboxId))
   )
+  ipcMain.handle(IPC.sessionOpenCodeUi, (_e, sessionId: unknown) => openCodeUiFor(id(sessionId)))
 
   /* ---------- worktree cleanup ---------- */
   ipcMain.handle(IPC.worktreeList, (_e, input?: unknown) =>
