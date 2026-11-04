@@ -16,9 +16,11 @@ export interface WebviewElement extends HTMLElement {
   getTitle(): string
   reload(): void
   loadURL(url: string): Promise<void>
-  addEventListener(type: 'did-finish-load' | 'render-process-gone', listener: () => void): void
+  addEventListener(type: 'did-finish-load', listener: () => void): void
+  addEventListener(type: 'render-process-gone', listener: (event: WebviewProcessGone) => void): void
   addEventListener(type: 'did-fail-load', listener: (event: WebviewLoadFailure) => void): void
-  removeEventListener(type: 'did-finish-load' | 'render-process-gone', listener: () => void): void
+  removeEventListener(type: 'did-finish-load', listener: () => void): void
+  removeEventListener(type: 'render-process-gone', listener: (event: WebviewProcessGone) => void): void
   removeEventListener(type: 'did-fail-load', listener: (event: WebviewLoadFailure) => void): void
 }
 
@@ -27,6 +29,19 @@ export interface WebviewLoadFailure extends Event {
   errorCode: number
   errorDescription: string
   isMainFrame: boolean
+}
+
+/**
+ * `render-process-gone` payload.
+ *
+ * The `reason` matters: `clean-exit`, `killed` and `memory-eviction` are normal
+ * ways for a guest process to end, not crashes. Electron uses the same value
+ * for a closed tab, a stopped guest and a discarded one under memory pressure,
+ * so treating every event as a failure reports healthy teardown as a crash.
+ */
+export interface WebviewProcessGone extends Event {
+  reason: 'clean-exit' | 'abnormal-exit' | 'killed' | 'crashed' | 'oom' | 'launch-failed' | 'integrity-failure' | 'memory-eviction'
+  exitCode: number
 }
 
 type WebviewHTMLAttributes = DetailedHTMLProps<
