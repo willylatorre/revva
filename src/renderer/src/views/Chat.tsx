@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowUp, Check, ChevronDown, Copy, Cpu, ImageIcon, Mic, Square, Tag, X } from 'lucide-react'
+import { ArrowUp, Check, ChevronDown, Copy, Cpu, ImageIcon, Mic, Square, SquareTerminal, Tag, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
@@ -26,6 +26,7 @@ import { ConversationEnvironment, ConversationActions, ConversationDetails } fro
 import { WorkAgentActivity } from './WorkAgentActivity'
 import { WorkFollowUpQueue } from './WorkFollowUpQueue'
 import { ChatReviewButton } from './ChatReviewButton'
+import { OpenCodeConsole } from './OpenCodeConsole'
 
 const IMAGE_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp'
 const MAX_IMAGES = 8
@@ -224,7 +225,8 @@ export function TranscriptView({
   onNewSession,
   hideSessionDetails,
   hideChildAgents,
-  work
+  work,
+  body
 }: {
   sessionId: string
   drive: TranscriptDrive
@@ -239,6 +241,8 @@ export function TranscriptView({
   /** Prevent nested child-output inspectors from recursively mounting themselves. */
   hideChildAgents?: boolean
   work?: WorkSummary
+  /** Replaces the transcript + composer body, keeping this view's header bar. */
+  body?: ReactNode
 }): React.JSX.Element {
   const qc = useQueryClient()
   const pending = useInbox().filter((item) => item.sessionID === sessionId)
@@ -609,6 +613,7 @@ export function TranscriptView({
           </>
         )}
       </div>
+      {body ?? <>
       <div ref={scrollWrapRef} className="relative flex min-h-0 flex-1 flex-col">
         <div className="pointer-events-none absolute right-3 top-3 z-10 flex flex-col items-end gap-2 sm:right-6">
           <SessionStats sessionId={sessionId} running={running} />
@@ -855,6 +860,7 @@ export function TranscriptView({
           </form>
         </div>
       )}
+      </>}
     </div>
   )
 }
@@ -1050,6 +1056,7 @@ export const workDrive: TranscriptDrive = {
 
 export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessionId: string; onOpenChat?: (sessionId: string) => void; work?: WorkSummary }): React.JSX.Element {
   const qc = useQueryClient()
+  const [consoleMode, setConsoleMode] = useState(false)
   const chats = useQuery({ queryKey: ['chats'], queryFn: () => window.revva.chat.list() })
   const chat = chats.data?.find((c) => c.sessionId === sessionId)
   const works = useQuery({ queryKey: ['works'], queryFn: () => window.revva.work.list() })
@@ -1124,6 +1131,7 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
       hideSessionDetails
       emptyHint={chat?.ticketKey ? `Ask anything about ${chat.ticketKey}.` : 'Ask anything about this project — this chat is not attached to a ticket.'}
       onNewSession={onOpenChat && chat ? newSession : undefined}
+      body={consoleMode ? <OpenCodeConsole key={sessionId} sessionId={sessionId} /> : undefined}
       header={
         <>
           {/* The conversation's name (and its rename affordance) lives in the
@@ -1175,6 +1183,27 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
           <ConversationDetails sessionId={sessionId} directory={chat?.directory} work={chatWork}>
             <SessionIdButton sessionId={sessionId} />
           </ConversationDetails>
+          {/* The transcript is Revva's rendering; OpenCode's own interface is one
+              click away for people who prefer it. The session is the same one,
+              so a message sent there appears here and vice versa. */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant={consoleMode ? 'secondary' : 'ghost'}
+                size="sm"
+                className="shrink-0"
+                aria-pressed={consoleMode}
+                onClick={() => setConsoleMode((on) => !on)}
+              >
+                <SquareTerminal data-icon="inline-start" />
+                <span className="hidden md:inline">Console</span>
+                <span className="sr-only md:hidden">OpenCode console</span>
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              {consoleMode ? "Show Revva's conversation view" : "Show this session in OpenCode's own interface"}
+            </TooltipContent>
+          </Tooltip>
         </>
       }
     />

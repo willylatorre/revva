@@ -41,6 +41,7 @@ export const IPC = {
   sessionQueue: 'revva:session:queue',
   sessionQueueCancel: 'revva:session:queue-cancel',
   sessionQueuePromote: 'revva:session:queue-promote',
+  sessionOpenCodeUi: 'revva:session:opencode-ui',
   chatSeen: 'revva:chat:seen',
   chatRename: 'revva:chat:rename',
   chatSetTicket: 'revva:chat:set-ticket',

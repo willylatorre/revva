@@ -20,6 +20,14 @@ export const serviceStatusSchema = z.object({
 })
 export type ServiceStatus = z.infer<typeof serviceStatusSchema>
 
+/** Where the embedded OpenCode web interface shows one session. */
+export interface OpenCodeUiTarget {
+  /** Deep link into OpenCode's own web UI, already paired. */
+  url: string
+  /** In-memory Electron partition holding the pairing cookie. */
+  partition: string
+}
+
 export interface McpStatus {
   location: string
   servers: Array<{
@@ -1044,6 +1052,8 @@ export interface RevvaApi {
     cancelQueued(sessionId: string, inboxId: string): Promise<void>
     /** Promote a queued message to steer delivery — the running agent reads it at the next step boundary. */
     promoteQueued(sessionId: string, inboxId: string): Promise<void>
+    /** Deep link + partition for showing this session in OpenCode's own web interface. */
+    openCodeUi(sessionId: string): Promise<OpenCodeUiTarget>
   }
   worktrees: {
     /** Linked worktrees across known repos (revva-created or not). Main checkouts are included on request. */
