@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowUp, Check, ChevronDown, Copy, Cpu, ImageIcon, Mic, Square, SquareTerminal, Tag, X } from 'lucide-react'
+import { ArrowUp, Check, ChevronDown, CircleAlert, Copy, Cpu, ExternalLink, FileWarning, FolderGit2, FolderOpen, GitBranch, ImageIcon, Loader2, Mic, Square, SquareTerminal, Tag, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
@@ -31,6 +31,52 @@ import { OpenCodeConsole } from './OpenCodeConsole'
 const IMAGE_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp'
 const MAX_IMAGES = 8
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
+
+function ChatRepoStatus({ sessionId, directory }: { sessionId: string; directory: string }): React.JSX.Element {
+  const status = useQuery({
+    queryKey: ['chat-repo-status', sessionId],
+    queryFn: () => window.revva.chat.repoStatus(sessionId),
+    refetchInterval: () => document.visibilityState === 'visible' ? 10_000 : false
+  })
+  const openVSCode = useMutation({ mutationFn: () => window.revva.chat.openVSCode(sessionId) })
+  const repo = status.data?.repoName ?? (status.isPending ? 'Checking repo…' : status.isError ? 'Git status unavailable' : 'No Git repo')
+  const branch = status.data?.repoDir ? status.data.branch ?? 'Detached HEAD' : null
+  const fileCount = status.data?.changedFiles
+  const workingDirectory = status.data?.directory ?? directory
+  const folderParts = workingDirectory.replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean)
+  const folderLabel = folderParts.slice(-2).join('/') || workingDirectory
+
+  return <>
+    <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-xs text-muted-foreground">
+      <span className="flex min-w-0 items-center gap-1 rounded-md border px-2 py-1" title={status.data?.repoDir ?? undefined}>
+        {status.isPending ? <Loader2 className="size-3.5 shrink-0 animate-spin" /> : <FolderGit2 className="size-3.5 shrink-0" />}
+        <span className="truncate">{repo}</span>
+      </span>
+      <span className="flex min-w-0 items-center gap-1 rounded-md border px-2 py-1" title={`Working folder: ${workingDirectory}`}>
+        <FolderOpen className="size-3.5 shrink-0" />
+        <span className="max-w-36 truncate">{folderLabel}</span>
+      </span>
+      {branch && <span className="flex min-w-0 items-center gap-1 rounded-md border px-2 py-1" title={branch}>
+        <GitBranch className="size-3.5 shrink-0" /><span className="hidden max-w-36 truncate sm:inline">{branch}</span>
+      </span>}
+      {fileCount !== null && fileCount !== undefined && status.data?.repoDir && <span className="flex shrink-0 items-center gap-1 rounded-md border px-2 py-1" title={`${fileCount} changed files`}>
+        <FileWarning className="size-3.5" /><span className="hidden sm:inline">{fileCount === 0 ? 'Clean' : `${fileCount} changed`}</span><span className="sm:hidden">{fileCount}</span>
+      </span>}
+    </div>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button type="button" size="sm" variant="ghost" className="shrink-0" disabled={openVSCode.isPending} onClick={() => openVSCode.mutate()}>
+          {openVSCode.isPending ? <Loader2 data-icon="inline-start" className="animate-spin" /> : openVSCode.isError ? <CircleAlert data-icon="inline-start" /> : <ExternalLink data-icon="inline-start" />}
+          <span className="hidden md:inline">{openVSCode.isError ? 'Open failed' : 'VS Code'}</span>
+          <span className="sr-only md:hidden">Open folder in VS Code</span>
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{openVSCode.isError
+        ? `Could not open in VS Code: ${openVSCode.error instanceof Error ? openVSCode.error.message : String(openVSCode.error)}`
+        : `Open ${status.data?.directory ?? 'this chat folder'} in VS Code`}</TooltipContent>
+    </Tooltip>
+  </>
+}
 
 /* ---------- composer dictation hint (Hex / Wispr Flow) ---------- */
 
@@ -1136,7 +1182,7 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
         <>
           {/* The conversation's name (and its rename affordance) lives in the
               app's top bar — repeating it here only duplicated the title. */}
-          <span aria-hidden className="min-w-0 flex-1" />
+          {chat && <ChatRepoStatus sessionId={sessionId} directory={chat.directory} />}
           {chat && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>

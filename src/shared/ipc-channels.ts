@@ -44,6 +44,8 @@ export const IPC = {
   sessionOpenCodeUi: 'revva:session:opencode-ui',
   chatSeen: 'revva:chat:seen',
   chatRename: 'revva:chat:rename',
+  chatRepoStatus: 'revva:chat:repo-status',
+  chatOpenVSCode: 'revva:chat:open-vscode',
   chatSetTicket: 'revva:chat:set-ticket',
   chatDelete: 'revva:chat:delete',
   dialogPickFolder: 'revva:dialog:pick-folder',

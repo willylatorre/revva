@@ -8,6 +8,7 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 ## [Unreleased]
 
 - **Large PR reviews survive slow checkout** — PR worktree creation now has a 30-minute budget instead of 60 seconds. Failures report the final Git output, including timeout details.
+- **Every open chat shows its Git checkout** — the chat header displays the repository, working folder, branch (or detached HEAD), and changed-file count, refreshing every ten seconds. Hover over the folder to see its full path. Open it in VS Code from the same header.
 
 ## [1.10.0] - 2026-11-04
 

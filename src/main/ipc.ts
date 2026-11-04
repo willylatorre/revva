@@ -39,6 +39,7 @@ import { githubManager } from './github'
 import { prDescriptionWriter } from './pr-description'
 import { startTicketSession } from './tasks'
 import { probeToolchain, setChoice } from './toolchain'
+import { chatRepoStatus } from './repo-status'
 import { discoverRepositories } from './repositories'
 import { parsePrRef } from '@shared/pr-ref'
 import { getDb, settingGet, settingSet, roleConfigList, roleConfigSet, favoriteModels, toggleFavoriteModel } from './db'
@@ -271,6 +272,18 @@ export function registerIpc(): void {
     triageManager.push()
   })
   ipcMain.handle(IPC.chatRename, (_e, sessionId: string, title: string) => chatManager.rename(String(sessionId), String(title)))
+  ipcMain.handle(IPC.chatRepoStatus, (_e, sessionId: unknown) => {
+    const directory = sessionDirectory(id(sessionId))
+    if (!directory) throw new Error('This chat has no project folder.')
+    return chatRepoStatus(directory)
+  })
+  ipcMain.handle(IPC.chatOpenVSCode, async (_e, sessionId: unknown) => {
+    const directory = sessionDirectory(id(sessionId))
+    if (!directory) throw new Error('This chat has no project folder to open.')
+    const path = directory.replace(/\\/g, '/').split('/').map((part) => /^[A-Za-z]:$/.test(part) ? part : encodeURIComponent(part)).join('/')
+    const uri = `vscode://file${path.startsWith('/') ? '' : '/'}${path}`
+    await shell.openExternal(uri)
+  })
   ipcMain.handle(IPC.chatSetTicket, (_e, sessionId: string, ticketKey: unknown) => {
     if (ticketKey !== null && typeof ticketKey !== 'string') throw new Error('Invalid ticket key.')
     return chatManager.setTicket(String(sessionId), ticketKey)

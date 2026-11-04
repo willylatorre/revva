@@ -147,6 +147,14 @@ export const chatSummarySchema = z.object({
 })
 export type ChatSummary = z.infer<typeof chatSummarySchema>
 
+export interface ChatRepoStatus {
+  directory: string
+  repoDir: string | null
+  repoName: string | null
+  branch: string | null
+  changedFiles: number | null
+}
+
 export const chatCreateInputSchema = z.object({
   directory: z.string().min(1),
   title: z.string().optional(),
@@ -1035,6 +1043,8 @@ export interface RevvaApi {
     prompt(sessionId: string, text: string, images?: PromptImage[], queued?: boolean, refs?: PromptRefs, sentAt?: number): Promise<void | 'queued'>
     interrupt(sessionId: string): Promise<void>
     rename(sessionId: string, title: string): Promise<void>
+    repoStatus(sessionId: string): Promise<ChatRepoStatus>
+    openVSCode(sessionId: string): Promise<void>
     setTicket(sessionId: string, ticketKey: string | null): Promise<void>
     /** Clears the unread dot after the user has looked at the chat. */
     markSeen(sessionId: string): Promise<void>
