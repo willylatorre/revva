@@ -28,7 +28,7 @@ import { jiraAuth } from './jira/auth'
 import { jiraMcp } from './jira/mcp'
 import { jiraBridge } from './jira/bridge'
 import { findDuplicateAtlassianConfigs } from './jira/harness-config'
-import { fetchBoard, fetchTicketDetail, markReadyForTest } from './jira/board'
+import { fetchBoard, fetchTicketBriefs, fetchTicketDetail, markReadyForTest } from './jira/board'
 import { commentWatcher } from './jira/watch'
 import { workManager } from './pipeline/works'
 import { worktreeManager } from './worktrees'
@@ -369,6 +369,9 @@ export function registerIpc(): void {
   })
   ipcMain.handle(IPC.boardFetch, () => fetchBoard())
   ipcMain.handle(IPC.jiraDetail, (_e, key: string) => fetchTicketDetail(String(key)))
+  ipcMain.handle(IPC.jiraTicketBriefs, (_e, keys: unknown) =>
+    fetchTicketBriefs(Array.isArray(keys) ? keys.map(String).slice(0, 100) : [])
+  )
   // Manual-only ticket move, and the only one to Ready to Test. A linked PR that is still
   // open means the work is not mergeable-done yet, so the user confirms that explicitly.
   ipcMain.handle(IPC.jiraReadyToTest, async (_e, key: unknown, confirmed: unknown) => {

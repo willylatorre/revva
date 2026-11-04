@@ -5,7 +5,7 @@
  * Nothing here opens github.com; the GitHub link is an explicit icon.
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ExternalLink, Layers, Loader2, MessageSquareText, ScanEye } from 'lucide-react'
+import { ExternalLink, Kanban, Layers, Loader2, MessageSquareText, ScanEye } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Badge } from '@/components/ui/badge'
@@ -18,6 +18,9 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Skeleton } from '@/components/ui/skeleton'
+import { cn } from '@/lib/utils'
+import { jiraStatusClasses } from '@/lib/status-colors'
+import { useLinkedTickets } from '@/lib/linked-work'
 import type { PullRequest } from '@shared/types'
 import { prGate, statusLine } from './PrConversationActions'
 
@@ -41,6 +44,8 @@ export function PrInfoDialog({
   })
   const chats = useQuery({ queryKey: ['chats'], queryFn: () => window.revva.chat.list(), enabled: open })
   const linked = (chats.data ?? []).filter((c) => c.prUrl === pr.url)
+  /** The ticket this PR names; shown with its live status. */
+  const ticket = useLinkedTickets(open && pr.ticketKey ? [pr.ticketKey] : []).get(pr.ticketKey ?? '')
   const afterSession = (sessionId: string): void => {
     void qc.invalidateQueries({ queryKey: ['chats'] })
     void qc.invalidateQueries({ queryKey: ['gh-prs'] })
@@ -110,6 +115,26 @@ export function PrInfoDialog({
                 </Badge>
               )}
             </div>
+
+            {ticket && (
+              <div className="flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-[12px]">
+                <Kanban className="size-3.5 shrink-0 text-muted-foreground" />
+                <button
+                  type="button"
+                  className="shrink-0 font-mono text-[11px] font-medium hover:underline"
+                  title="Open this ticket on Jira"
+                  onClick={() => (ticket.url ? void window.revva.shell.openExternal(ticket.url) : undefined)}
+                >
+                  {ticket.key}
+                </button>
+                <Badge variant="outline" className={cn('shrink-0 text-[9px]', jiraStatusClasses(ticket.status, ticket.statusCategory))}>
+                  {ticket.status}
+                </Badge>
+                <p title={ticket.summary} className="min-w-0 flex-1 truncate text-muted-foreground">
+                  {ticket.summary}
+                </p>
+              </div>
+            )}
 
             {data.body && (
               <div

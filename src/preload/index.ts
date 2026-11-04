@@ -88,6 +88,7 @@ const api: RevvaApi = {
     disconnect: () => ipcRenderer.invoke(IPC.jiraDisconnect),
     board: () => ipcRenderer.invoke(IPC.boardFetch),
     detail: (key) => ipcRenderer.invoke(IPC.jiraDetail, key),
+    tickets: (keys) => ipcRenderer.invoke(IPC.jiraTicketBriefs, keys),
     readyToTest: (key, confirmed) => ipcRenderer.invoke(IPC.jiraReadyToTest, key, confirmed)
   },
   work: {
