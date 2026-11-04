@@ -42,6 +42,14 @@ const CLONE_TIMEOUT_MS = 30 * 60_000
 /** A PR head fetch on a big repo can also outrun the ordinary 60s budget. */
 const FETCH_TIMEOUT_MS = 10 * 60_000
 
+/** Checking out a PR worktree can write thousands of files on a slow disk. */
+const WORKTREE_TIMEOUT_MS = 30 * 60_000
+
+function commandErrorTail(out: string, err: string): string {
+  const detail = (err || out).trim()
+  return detail.length > 300 ? `…${detail.slice(-300)}` : detail
+}
+
 /** The hook's verdict is the LAST line it printed, not the head of successful scans. */
 function pushErrorTail(out: string, err: string): string {
   const output = (err || out).trim()
@@ -821,8 +829,8 @@ class GitHubManager {
     if (!alreadyAdded) {
       const fetch = await git(repoDir, ['fetch', 'origin', `pull/${pr.number}/head:${branch}`], { timeoutMs: FETCH_TIMEOUT_MS })
       if (!fetch.ok) throw new Error(`git fetch of PR head failed: ${fetch.err.slice(0, 300)}`)
-      const add = await git(repoDir, ['worktree', 'add', '--detach', worktreeDir, branch])
-      if (!add.ok) throw new Error(`git worktree add failed: ${add.err.slice(0, 300)}`)
+      const add = await git(repoDir, ['worktree', 'add', '--detach', worktreeDir, branch], { timeoutMs: WORKTREE_TIMEOUT_MS })
+      if (!add.ok) throw new Error(`git worktree add failed: ${commandErrorTail(add.out, add.err) || 'git exited without a message'}`)
     }
     return worktreeDir
   }

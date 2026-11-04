@@ -7,7 +7,7 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
-- (nothing yet)
+- **Large PR reviews survive slow checkout** — PR worktree creation now has a 30-minute budget instead of 60 seconds. Failures report the final Git output, including timeout details.
 
 ## [1.10.0] - 2026-11-04
 
