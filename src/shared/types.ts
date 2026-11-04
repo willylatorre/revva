@@ -20,6 +20,14 @@ export const serviceStatusSchema = z.object({
 })
 export type ServiceStatus = z.infer<typeof serviceStatusSchema>
 
+/** Where the embedded OpenCode web interface shows one session. */
+export interface OpenCodeUiTarget {
+  /** Deep link into OpenCode's own web UI, already paired. */
+  url: string
+  /** In-memory Electron partition holding the pairing cookie. */
+  partition: string
+}
+
 export interface McpStatus {
   location: string
   servers: Array<{
@@ -138,6 +146,14 @@ export const chatSummarySchema = z.object({
   unread: z.boolean().optional()
 })
 export type ChatSummary = z.infer<typeof chatSummarySchema>
+
+export interface ChatRepoStatus {
+  directory: string
+  repoDir: string | null
+  repoName: string | null
+  branch: string | null
+  changedFiles: number | null
+}
 
 export const chatCreateInputSchema = z.object({
   directory: z.string().min(1),
@@ -454,6 +470,16 @@ export const ticketDetailSchema = z.object({
 })
 export type TicketDetail = z.infer<typeof ticketDetailSchema>
 
+/** The slice of a ticket a PR card needs: status and a link, without the raw payload. */
+export const linkedTicketSchema = z.object({
+  key: z.string(),
+  summary: z.string(),
+  status: z.string(),
+  statusCategory: z.string(),
+  url: z.string().optional()
+})
+export type LinkedTicket = z.infer<typeof linkedTicketSchema>
+
 export const jiraStatusSchema = z.object({
   connected: z.boolean(),
   expired: z.boolean(),
@@ -690,7 +716,9 @@ export const pullRequestSchema = z.object({
   /** Open review threads the user still has to answer (enriched). */
   unresolvedThreads: z.number().optional(),
   /** More unresolved threads than when the user last looked. */
-  hasNewReviewThreads: z.boolean().optional()
+  hasNewReviewThreads: z.boolean().optional(),
+  /** Jira ticket this PR belongs to, read from the PR title, its head branch, or a linked work. */
+  ticketKey: z.string().optional()
 })
 export type PullRequest = z.infer<typeof pullRequestSchema>
 
@@ -763,6 +791,13 @@ export const taskSessionResultSchema = z.object({
   directory: z.string()
 })
 export type TaskSessionResult = z.infer<typeof taskSessionResultSchema>
+
+export const reviewSetupStatusSchema = z.object({
+  state: z.enum(['preparing', 'failed']),
+  stage: z.string(),
+  error: z.string().optional()
+})
+export type ReviewSetupStatus = z.infer<typeof reviewSetupStatusSchema>
 
 /* ---------- Inbox (M2) ---------- */
 
@@ -947,6 +982,7 @@ export const pushEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('github.alerts'), items: z.array(prAlertSchema) }),
   /** Fresh PR snapshot for one scope (poller or refresh); feeds boards directly. */
   z.object({ kind: z.literal('github.prs'), scope: z.enum(['mine', 'review']), items: z.array(pullRequestSchema) }),
+  z.object({ kind: z.literal('github.review-setup'), sessionId: z.string() }),
   z.object({ kind: z.literal('review.updated'), workId: z.string(), round: z.number(), reviews: z.array(reviewRowSchema) }),
   /** Live streamed text from a reviewer/fixer session. */
   z.object({ kind: z.literal('review.delta'), workId: z.string(), sessionId: z.string(), messageId: z.string(), text: z.string() }),
@@ -1015,6 +1051,8 @@ export interface RevvaApi {
     prompt(sessionId: string, text: string, images?: PromptImage[], queued?: boolean, refs?: PromptRefs, sentAt?: number): Promise<void | 'queued'>
     interrupt(sessionId: string): Promise<void>
     rename(sessionId: string, title: string): Promise<void>
+    repoStatus(sessionId: string): Promise<ChatRepoStatus>
+    openVSCode(sessionId: string): Promise<void>
     setTicket(sessionId: string, ticketKey: string | null): Promise<void>
     /** Clears the unread dot after the user has looked at the chat. */
     markSeen(sessionId: string): Promise<void>
@@ -1044,6 +1082,8 @@ export interface RevvaApi {
     cancelQueued(sessionId: string, inboxId: string): Promise<void>
     /** Promote a queued message to steer delivery — the running agent reads it at the next step boundary. */
     promoteQueued(sessionId: string, inboxId: string): Promise<void>
+    /** Deep link + partition for showing this session in OpenCode's own web interface. */
+    openCodeUi(sessionId: string): Promise<OpenCodeUiTarget>
   }
   worktrees: {
     /** Linked worktrees across known repos (revva-created or not). Main checkouts are included on request. */
@@ -1066,6 +1106,8 @@ export interface RevvaApi {
     /** Sub-tickets of one issue, in board order. */
     /** Body, comments, sub-tasks and links of one issue; fetched when the details dialog opens. */
     detail(key: string): Promise<TicketDetail>
+    /** Status of several tickets at once (cached; one JQL refresh at most per minute). */
+    tickets(keys: string[]): Promise<LinkedTicket[]>
     /** Manual-only Ready to Test move; Revva refuses while a linked PR is unmerged unless confirmed. */
     readyToTest(key: string, confirmed?: boolean): Promise<ReadyToTestResult>
   }
@@ -1120,6 +1162,8 @@ export interface RevvaApi {
     list(scope?: 'mine' | 'review', force?: boolean): Promise<PullRequest[]>
     /** Spin up a PR-review agent session (worktree checked out in the background). */
     review(prUrl: string): Promise<TaskSessionResult>
+    /** Current setup phase for a PR-review chat, or null after setup completes. */
+    reviewSetup(sessionId: string): Promise<ReviewSetupStatus | null>
     /** New chat linked to the PR (+ its ticket), checked out at the PR's branch; opens directly. */
     chat(prUrl: string): Promise<TaskSessionResult>
     /** Start a writable chat in an isolated worktree to resolve PR conflicts. */

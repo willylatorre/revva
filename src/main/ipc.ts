@@ -10,6 +10,7 @@ import { IPC, settingsKeySchema, toolchainChoiceSchema, chatCreateInputSchema, m
 import { keepAwake } from './keep-awake'
 import { detectDictationApps } from './dictation'
 import { openCodeService, resetServiceSpawn } from './opencode/service'
+import { openCodeUiFor } from './opencode/ui'
 import { chatManager } from './opencode/chats'
 import { agentSessions } from './opencode/agent-sessions'
 import { agentActivityMeter } from './opencode/agent-activity'
@@ -27,7 +28,7 @@ import { jiraAuth } from './jira/auth'
 import { jiraMcp } from './jira/mcp'
 import { jiraBridge } from './jira/bridge'
 import { findDuplicateAtlassianConfigs } from './jira/harness-config'
-import { fetchBoard, fetchTicketDetail, markReadyForTest } from './jira/board'
+import { fetchBoard, fetchTicketBriefs, fetchTicketDetail, markReadyForTest } from './jira/board'
 import { commentWatcher } from './jira/watch'
 import { workManager } from './pipeline/works'
 import { worktreeManager } from './worktrees'
@@ -38,6 +39,7 @@ import { githubManager } from './github'
 import { prDescriptionWriter } from './pr-description'
 import { startTicketSession } from './tasks'
 import { probeToolchain, setChoice } from './toolchain'
+import { chatRepoStatus } from './repo-status'
 import { discoverRepositories } from './repositories'
 import { parsePrRef } from '@shared/pr-ref'
 import { getDb, settingGet, settingSet, roleConfigList, roleConfigSet, favoriteModels, toggleFavoriteModel } from './db'
@@ -270,6 +272,18 @@ export function registerIpc(): void {
     triageManager.push()
   })
   ipcMain.handle(IPC.chatRename, (_e, sessionId: string, title: string) => chatManager.rename(String(sessionId), String(title)))
+  ipcMain.handle(IPC.chatRepoStatus, (_e, sessionId: unknown) => {
+    const directory = sessionDirectory(id(sessionId))
+    if (!directory) throw new Error('This chat has no project folder.')
+    return chatRepoStatus(directory)
+  })
+  ipcMain.handle(IPC.chatOpenVSCode, async (_e, sessionId: unknown) => {
+    const directory = sessionDirectory(id(sessionId))
+    if (!directory) throw new Error('This chat has no project folder to open.')
+    const path = directory.replace(/\\/g, '/').split('/').map((part) => /^[A-Za-z]:$/.test(part) ? part : encodeURIComponent(part)).join('/')
+    const uri = `vscode://file${path.startsWith('/') ? '' : '/'}${path}`
+    await shell.openExternal(uri)
+  })
   ipcMain.handle(IPC.chatSetTicket, (_e, sessionId: string, ticketKey: unknown) => {
     if (ticketKey !== null && typeof ticketKey !== 'string') throw new Error('Invalid ticket key.')
     return chatManager.setTicket(String(sessionId), ticketKey)
@@ -322,6 +336,7 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.sessionQueuePromote, (_e, sessionId: string, inboxId: string) =>
     chatManager.promoteQueued(String(sessionId), String(inboxId))
   )
+  ipcMain.handle(IPC.sessionOpenCodeUi, (_e, sessionId: unknown) => openCodeUiFor(id(sessionId)))
 
   /* ---------- worktree cleanup ---------- */
   ipcMain.handle(IPC.worktreeList, (_e, input?: unknown) =>
@@ -367,6 +382,9 @@ export function registerIpc(): void {
   })
   ipcMain.handle(IPC.boardFetch, () => fetchBoard())
   ipcMain.handle(IPC.jiraDetail, (_e, key: string) => fetchTicketDetail(String(key)))
+  ipcMain.handle(IPC.jiraTicketBriefs, (_e, keys: unknown) =>
+    fetchTicketBriefs(Array.isArray(keys) ? keys.map(String).slice(0, 100) : [])
+  )
   // Manual-only ticket move, and the only one to Ready to Test. A linked PR that is still
   // open means the work is not mergeable-done yet, so the user confirms that explicitly.
   ipcMain.handle(IPC.jiraReadyToTest, async (_e, key: unknown, confirmed: unknown) => {
@@ -466,6 +484,7 @@ export function registerIpc(): void {
     if (!parsed?.url) throw new Error('Pass a full PR URL or owner/repo#123 (bare numbers are ambiguous across projects).')
     return githubManager.startReview(parsed.url)
   })
+  ipcMain.handle(IPC.githubReviewSetup, (_e, sessionId: unknown) => githubManager.reviewSetup(id(sessionId)))
   ipcMain.handle(IPC.githubChat, (_e, ref: string) => {
     const parsed = parsePrRef(String(ref))
     if (!parsed?.url) throw new Error('Pass a full PR URL.')

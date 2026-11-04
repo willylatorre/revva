@@ -7,6 +7,7 @@
 import { jiraMcp, commentListFrom, type JiraLink, type JiraTicket } from './mcp'
 import { getDb } from '../db'
 import { jiraBodyToText } from './rich-text'
+import type { LinkedTicket } from '@shared/types'
 
 const BOARD_JQL =
   "sprint in openSprints() AND assignee = currentUser() AND statusCategory != Done ORDER BY rank ASC"
@@ -274,9 +275,69 @@ function linksFromRaw(raw: string): JiraLink[] {
   }
 }
 
+/**
+ * Status of several tickets in one go, for the PR board: a PR card shows its ticket's
+ * status, but the PR list can name tickets that left the current-sprint board.
+ *
+ * The sqlite ticket cache answers first, then ONE JQL refresh for the keys it lacks
+ * or holds a stale status for (a closed or reassigned ticket still resolves this
+ * way). The refresh is skipped when it ran within the last minute, so switching PR
+ * tabs does not hammer Jira. Unresolved keys are simply absent from the result.
+ */
+const BRIEF_REFRESH_MS = 60_000
+/** A cached status older than this is refreshed even when the key is known. */
+const BRIEF_FRESH_MS = 10 * 60_000
+let briefRefreshedAt = 0
+
+const TICKET_KEY_RE = /^[A-Za-z][A-Za-z0-9]+-\d+$/
+
+export async function fetchTicketBriefs(keys: string[]): Promise<LinkedTicket[]> {
+  const wanted = [...new Set(keys.filter((k) => TICKET_KEY_RE.test(k)))]
+  if (wanted.length === 0) return []
+
+  const site = jiraMcp.siteWebUrl()
+  const brief = (t: JiraTicket): LinkedTicket => ({
+    key: t.key,
+    summary: t.summary,
+    status: t.status,
+    statusCategory: t.statusCategory,
+    url: t.url ?? (site ? `${site}/browse/${t.key}` : undefined)
+  })
+  const fresh = (row: { synced_at: number | null }): boolean =>
+    typeof row.synced_at === 'number' && Date.now() - row.synced_at < BRIEF_FRESH_MS
+
+  const found = new Map<string, LinkedTicket>()
+  const stale = new Set<string>()
+  const db = getDb()
+  for (const key of wanted) {
+    // Cache only: getTicket would fall back to one getIssue round-trip per key.
+    const row = db.prepare('SELECT key, summary, status, status_category, synced_at FROM ticket WHERE key = ?').get(key) as
+      | { key: string; summary: string; status: string; status_category: string; synced_at: number | null }
+      | undefined
+    if (!row) continue
+    found.set(key, { key: row.key, summary: row.summary, status: row.status, statusCategory: row.status_category })
+    if (!fresh(row)) stale.add(key)
+  }
+  const missing = wanted.filter((k) => !found.has(k) || stale.has(k))
+  if (missing.length > 0 && jiraMcp.connected && Date.now() - briefRefreshedAt >= BRIEF_REFRESH_MS) {
+    briefRefreshedAt = Date.now()
+    try {
+      const jql = `key in (${missing.join(', ')})`
+      const result = await jiraMcp.search(jql, ['summary', 'status', 'issuetype'])
+      const tickets = issuesFrom(result).map(mapIssue).filter((t): t is JiraTicket => !!t)
+      withWebUrls(tickets)
+      cacheTickets(tickets)
+      for (const t of tickets) if (missing.includes(t.key)) found.set(t.key, brief(t))
+    } catch {
+      /* a lookup miss just means the card keeps its cached status or shows none */
+    }
+  }
+  for (const t of found.values()) if (!t.url && site) t.url = `${site}/browse/${t.key}`
+  return wanted.flatMap((k) => (found.has(k) ? [found.get(k)!] : []))
+}
+
 /** What "Ready to Test" is called on this site ("Ready for Test", "Ready for QA", …). */
 export const READY_TO_TEST_STATUS = /ready\s*-?\s*(?:to\s+|for\s+)?(?:test|qa|testing)/i
-
 /**
  * Manual-only move to the site's Ready-to-Test status. Ship and agents never transition
  * tickets — an open PR is not proof the work is testable — so this button (behind an IPC

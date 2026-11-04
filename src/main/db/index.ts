@@ -17,6 +17,7 @@ export function getDb(): Database.Database {
   db = new Database(join(dir, 'revva.db'))
   db.pragma('journal_mode = WAL')
   migrate(db)
+  db.prepare(`UPDATE github_review_setup SET state = 'failed', stage = 'Setup stopped when Revva closed.', error = 'Revva closed before the PR checkout finished.', updated_at = ? WHERE state = 'preparing'`).run(Date.now())
   return db
 }
 
@@ -193,6 +194,15 @@ function migrate(db: Database.Database): void {
     addColumnIfMissing(db, 'role_config', 'variant', 'TEXT')
     addColumnIfMissing(db, 'review', 'variant', 'TEXT')
     db.exec('PRAGMA user_version = 13;')
+  }
+  if (version < 14) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS github_review_setup (
+        session_id TEXT PRIMARY KEY, pr_url TEXT NOT NULL, state TEXT NOT NULL,
+        stage TEXT NOT NULL, error TEXT, updated_at INTEGER NOT NULL
+      );
+      PRAGMA user_version = 14;
+    `)
   }
 }
 

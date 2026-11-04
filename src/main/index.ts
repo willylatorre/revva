@@ -25,6 +25,17 @@ import { handleTranscriptImages, registerImageScheme } from './opencode/transcri
 
 registerImageScheme()
 
+/** The local service origin, for the embedded OpenCode UI's navigation guard. */
+function sameOriginAsService(url: string): boolean {
+  const service = openCodeService.getStatus().url
+  if (!service) return false
+  try {
+    return new URL(url).origin === new URL(service).origin
+  } catch {
+    return false
+  }
+}
+
 function createWindow(): void {
   const win = new BrowserWindow({
     width: 1280,
@@ -38,7 +49,10 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: false,
+      // The chat header can swap Revva's transcript for OpenCode's own web
+      // interface; that view is a <webview> on an isolated, in-memory session.
+      webviewTag: true
     }
   })
 
@@ -46,6 +60,29 @@ function createWindow(): void {
   win.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url)
     return { action: 'deny' }
+  })
+
+  // The chat header can embed OpenCode's own web interface. The guest page runs
+  // in its own process with no Node access, and it may only ever talk to the
+  // paired local service: a doc link or a search result opens in the user's
+  // browser instead of navigating inside Revva.
+  win.webContents.on('will-attach-webview', (event, webPreferences, params) => {
+    delete webPreferences.preload
+    webPreferences.nodeIntegration = false
+    webPreferences.contextIsolation = true
+    if (!params.src || !sameOriginAsService(params.src)) event.preventDefault()
+  })
+  win.webContents.on('did-attach-webview', (_event, guest) => {
+    guest.setWindowOpenHandler(({ url }) => {
+      void shell.openExternal(url)
+      return { action: 'deny' }
+    })
+    guest.on('will-navigate', (event, url) => {
+      if (!sameOriginAsService(url)) {
+        event.preventDefault()
+        void shell.openExternal(url)
+      }
+    })
   })
 
   const devUrl = process.env['ELECTRON_RENDERER_URL']

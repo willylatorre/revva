@@ -50,6 +50,8 @@ const api: RevvaApi = {
     prompt: (sessionId, text, images, queued, refs, sentAt) => ipcRenderer.invoke(IPC.chatPrompt, sessionId, text, images, queued, refs, sentAt),
     interrupt: (sessionId) => ipcRenderer.invoke(IPC.chatInterrupt, sessionId),
     rename: (sessionId, title) => ipcRenderer.invoke(IPC.chatRename, sessionId, title),
+    repoStatus: (sessionId) => ipcRenderer.invoke(IPC.chatRepoStatus, sessionId),
+    openVSCode: (sessionId) => ipcRenderer.invoke(IPC.chatOpenVSCode, sessionId),
     setTicket: (sessionId, ticketKey) => ipcRenderer.invoke(IPC.chatSetTicket, sessionId, ticketKey),
     markSeen: (sessionId) => ipcRenderer.invoke(IPC.chatSeen, sessionId),
     remove: (sessionId) => ipcRenderer.invoke(IPC.chatDelete, sessionId)
@@ -71,7 +73,8 @@ const api: RevvaApi = {
     agentActivity: () => ipcRenderer.invoke(IPC.sessionAgentActivity),
     queue: (sessionId) => ipcRenderer.invoke(IPC.sessionQueue, sessionId),
     cancelQueued: (sessionId, inboxId) => ipcRenderer.invoke(IPC.sessionQueueCancel, sessionId, inboxId),
-    promoteQueued: (sessionId, inboxId) => ipcRenderer.invoke(IPC.sessionQueuePromote, sessionId, inboxId)
+    promoteQueued: (sessionId, inboxId) => ipcRenderer.invoke(IPC.sessionQueuePromote, sessionId, inboxId),
+    openCodeUi: (sessionId) => ipcRenderer.invoke(IPC.sessionOpenCodeUi, sessionId)
   },
   worktrees: {
     list: (input) => ipcRenderer.invoke(IPC.worktreeList, input),
@@ -87,6 +90,7 @@ const api: RevvaApi = {
     disconnect: () => ipcRenderer.invoke(IPC.jiraDisconnect),
     board: () => ipcRenderer.invoke(IPC.boardFetch),
     detail: (key) => ipcRenderer.invoke(IPC.jiraDetail, key),
+    tickets: (keys) => ipcRenderer.invoke(IPC.jiraTicketBriefs, keys),
     readyToTest: (key, confirmed) => ipcRenderer.invoke(IPC.jiraReadyToTest, key, confirmed)
   },
   work: {
@@ -124,6 +128,7 @@ const api: RevvaApi = {
   github: {
     list: (scope, force) => ipcRenderer.invoke(IPC.githubList, scope, force),
     review: (prUrl) => ipcRenderer.invoke(IPC.githubReview, prUrl),
+    reviewSetup: (sessionId) => ipcRenderer.invoke(IPC.githubReviewSetup, sessionId),
     chat: (prUrl) => ipcRenderer.invoke(IPC.githubChat, prUrl),
     solveConflicts: (prUrl) => ipcRenderer.invoke(IPC.githubSolveConflicts, prUrl),
     solveComments: (prUrl) => ipcRenderer.invoke(IPC.githubSolveComments, prUrl),

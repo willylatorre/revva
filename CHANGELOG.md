@@ -9,6 +9,30 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 - **Choose a model when retrying or relaunching a review agent** — reviewer retries can use a different discovered model for that attempt only. Changing the fixer model starts a fresh fixer session while preserving the prior session and partial work; configured model defaults are unchanged.
 
+## [1.11.0] - 2026-11-04
+
+- **Large PR reviews survive slow checkout** — PR worktree creation now has a 30-minute budget instead of 60 seconds. Failures report the final Git output, including timeout details.
+- **Every open chat shows its Git checkout** — the chat header displays the repository, working folder, branch (or detached HEAD), and changed-file count, refreshing every ten seconds. Hover over the folder to see its full path. Open it in VS Code from the same header.
+- **PR review setup runs in the background** — clicking Review opens a new chat right away. The chat shows clone, fetch, and checkout phases while you continue using Revva. Setup failures stay visible and offer Retry.
+
+## [1.10.0] - 2026-11-04
+
+- **PRs and Jira tickets link both ways** — a PR whose title or branch carries a ticket key (the usual prefix) now shows that ticket's live status on its card, and clicking the badge opens the ticket on Jira. The ticket card shows each PR waiting on it with its state — open, draft, approved, changes requested, conflicts, merged or shipped — and clicking it opens the PR. A PR that names more than one ticket stays unlinked rather than guessing. The lookup reads cached status first and asks Jira for a batch refresh at most once a minute, so switching boards never waits on a slow request.
+
+  PRs shipped by Revva keep their link after merging, so a merged PR still reads on the ticket instead of vanishing with the open-PR list. The same ticket row appears in the PR details dialog.
+
+- **Reviewing a PR no longer fails with an empty `git clone failed:`** — starting a review clones the PR's repository into a shared checkout under the worktrees root on first use, and that clone ran on the ordinary 60-second command budget. A large repository (or any clone writing onto a Windows drive through WSL) outlived it, was killed mid-transfer, and the killed process printed nothing on stderr — so the error you saw was the prefix and nothing else. Clones now get 30 minutes and PR-head fetches 10, a killed command says it ran out of time instead of blaming git, and a failed or interrupted clone is staged in a sibling folder and only moved into place when it succeeds. A half-written checkout can no longer be mistaken for a finished one, and a folder left behind by an earlier failure is moved aside on the next attempt instead of blocking it.
+
+## [1.9.0] - 2026-11-04
+
+- **Every conversation can now show OpenCode's own interface instead of Revva's chat view** — the chat header has a **Console** toggle. It swaps Revva's transcript and composer for OpenCode V2's own web interface, opened on the same session, so a message written there appears in Revva and the other way around. The toggle is per conversation and never changes another chat's view. Switching back is one click, and nothing is duplicated or copied between the two views.
+
+  Revva pairs with the running local service to get the interface's session cookie, and keeps that cookie in a memory-only browser session: it is never written to disk. The embedded page runs with no Node access, cannot open popups, and may only navigate inside the local service — any other link opens in your normal browser. If the service is restarted, pairing is refreshed automatically; if the page still fails to load, the panel says so and offers **Try again** and **Open in browser**.
+
+  When the embedded page's process ends on its own — a closed tab, a stopped guest, or a process discarded under memory pressure — the panel reloads the same session instead of reporting a crash. Only a genuine failure is reported, and it now names the cause (`crashed`, `oom`, `launch-failed`, `integrity-failure`) instead of the same generic line for every case. Repeated ends without a successful load stop after three attempts and offer the browser fallback rather than reloading forever.
+
+## [1.8.0] - 2026-11-03
+
 - **Revva now finds OpenCode V2 by itself, and says plainly when only V1 is installed** — a V1 `opencode` on PATH used to fail with the opaque `Server process exited with code 1`, because V1 has no `serve --service` flag. Revva now asks each candidate for its version and drives the first V2 (or newer) it finds, so a V2 installed beside V1 as `opencode2` (or `opencode-v2`) works without renaming anything. When only V1 answers, Setup and the connection popover say that V1 is not supported and that Revva needs V2, instead of showing an exit code. The service also refuses to attach to an already-registered V1 endpoint. Because a second V2 install usually keeps its own state directory, Revva asks V2 where it registers (`debug paths`) instead of assuming its pinned path, so a wrapper that sets its own `XDG_STATE_HOME` still connects.
 
 ## [1.7.1] - 2026-11-03

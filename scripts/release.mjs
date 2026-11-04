@@ -58,23 +58,30 @@ if (sh('git', ['tag', '-l', tag])) fail(`${tag} already exists`)
 console.log(`revva ${pkg.version} → ${version} (${bump})${dryRun ? ' [dry-run]' : ''}`)
 
 /* ---- changelog: seal [Unreleased] under the new version ---- */
-const changelog = readFileSync(changelogPath, 'utf8')
+// A checkout with core.autocrlf=true hands us CRLF; sealing is done in LF and
+// written back in the file's own line endings so the diff stays line-ending-free.
+const changelogRaw = readFileSync(changelogPath, 'utf8')
+const eol = changelogRaw.includes('\r\n') ? '\r\n' : '\n'
+const changelog = changelogRaw.replace(/\r\n/g, '\n')
 if (!changelog.includes('## [Unreleased]')) fail('CHANGELOG.md must keep a "## [Unreleased]" heading')
 const unreleasedBody = changelog.match(/^## \[Unreleased\]\n([\s\S]*?)(?=^## |\Z)/m)?.[1]?.trim() ?? ''
+if (!unreleasedBody) fail('could not read the "## [Unreleased]" section')
 const notes =
-  unreleasedBody && !/^-\s*(none|n\/a)\.?$/i.test(unreleasedBody)
+  !/^-\s*(none|n\/a|nothing yet)\.?$/i.test(unreleasedBody)
     ? unreleasedBody
     : '_No user-facing changes recorded._'
 const today = new Date().toISOString().slice(0, 10)
 const sealedChangelog = changelog.replace(
   /^## \[Unreleased\]\n[\s\S]*?(?=^## |\Z)/m,
   `## [Unreleased]\n\n- (nothing yet)\n\n## [${version}] - ${today}\n\n${notes}\n\n`
-)
+).replace(/\n/g, eol)
 
 if (dryRun) {
   console.log('--- CHANGELOG.md would gain: ---')
-  const idx = sealedChangelog.indexOf(`## [${version}]`)
-  console.log(sealedChangelog.slice(idx, sealedChangelog.indexOf('\n\n## ', idx) === -1 ? undefined : sealedChangelog.indexOf(`\n\n## `, idx) + 2))
+  const sealedLines = sealedChangelog.split(eol).join('\n')
+  const idx = sealedLines.indexOf(`## [${version}]`)
+  const end = sealedLines.indexOf('\n\n## ', idx)
+  console.log(sealedLines.slice(idx, end === -1 ? undefined : end))
   process.exit(0)
 }
 

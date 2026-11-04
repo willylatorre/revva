@@ -82,6 +82,15 @@ export class OpenCodeService {
     return this.status.state === 'connected' && !!this.client
   }
 
+  /**
+   * Basic-auth headers for a raw fetch to the current endpoint (the web UI's
+   * pairing step needs them). Empty when no endpoint is attached.
+   */
+  authHeaders(): Record<string, string> {
+    if (!this.endpoint) return {}
+    return (Service.headers(this.endpoint) ?? {}) as Record<string, string>
+  }
+
   async ensure(): Promise<ServiceStatus> {
     this.setStatus({ state: 'connecting', lastCheckedAt: Date.now(), message: undefined })
     try {

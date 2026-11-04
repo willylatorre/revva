@@ -10,6 +10,7 @@ import {
   CornerDownRight,
   CornerUpLeft,
   ExternalLink,
+  GitPullRequestArrow,
   ListChecks,
   Loader2,
   MessageSquareText,
@@ -42,9 +43,10 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { CardBoard, CardZone, moveToZone } from '@/components/CardBoard'
 import { MD_COMPONENTS } from '@/components/message-markdown'
 import { useCardOrder } from '@/lib/use-card-order'
+import { prStateLabel, useLinkedPrs } from '@/lib/linked-work'
 import { cn } from '@/lib/utils'
 import { isInFlightStatus, jiraStatusClasses, jiraTypeClasses } from '@/lib/status-colors'
-import type { Ticket, WorkSummary } from '@shared/types'
+import type { PullRequest, Ticket, WorkSummary } from '@shared/types'
 import { StartWorkDialog } from './StartWorkDialog'
 
 const ALL_STATUSES = '__all__'
@@ -253,6 +255,7 @@ export function BoardView({
           <TicketBoard
             visible={visible}
             boardData={board.data ?? []}
+            works={works}
             activeByTicket={activeByTicket}
             sessionBusy={sessionBusy}
             readyBusyKey={ready.busyKey}
@@ -308,6 +311,7 @@ export function BoardView({
 function TicketBoard({
   visible,
   boardData,
+  works,
   activeByTicket,
   sessionBusy,
   readyBusyKey,
@@ -319,6 +323,8 @@ function TicketBoard({
 }: {
   visible: Ticket[]
   boardData: Ticket[]
+  /** Every known work row; the ones carrying a PR link feed the ticket cards. */
+  works: WorkSummary[]
   activeByTicket: Map<string, WorkSummary>
   sessionBusy: string | null
   /** Ticket key whose Ready-to-Test move is in flight. */
@@ -333,6 +339,8 @@ function TicketBoard({
   const { zones, commit } = useCardOrder('jira', liveIds)
   const [laterOpen, setLaterOpen] = useState(false)
   const byKey = useMemo(() => new Map(visible.map((t) => [t.key, t])), [visible])
+  /** PRs waiting on each visible ticket — read from the PR pollers plus Revva's own ships. */
+  const linkedPrs = useLinkedPrs(works)
   /**
    * Parent ↔ sub-task chain per ticket, keyed on the chain's root (the parent
    * card's own key), so the parent and its sub-tasks light up together on hover
@@ -385,6 +393,7 @@ function TicketBoard({
       <TicketCard
         t={t}
         boardData={boardData}
+        prs={linkedPrs.get(t.key) ?? []}
         active={activeByTicket.get(t.key)}
         sessionBusy={sessionBusy === t.key}
         readyBusy={readyBusyKey === t.key}
@@ -463,6 +472,7 @@ function TicketBoard({
 function TicketCard({
   t,
   boardData,
+  prs,
   active,
   sessionBusy,
   readyBusy,
@@ -481,6 +491,8 @@ function TicketCard({
 }: {
   t: Ticket
   boardData: Ticket[]
+  /** PRs linked to this ticket (open list + Revva's own shipped rows). */
+  prs: PullRequest[]
   /** Parent/sub-task chain identity (the chain root's key); own key when unrelated. */
   chainKey?: string
   /** Another card of the same chain is hovered — light this one up. */
@@ -590,6 +602,29 @@ function TicketCard({
             </TooltipContent>
           </Tooltip>
         )}
+        {prs.map((pr) => {
+          const state = prStateLabel(pr)
+          return (
+            <Tooltip key={pr.url}>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className="shrink-0"
+                  title="Open this PR on GitHub"
+                  onClick={() => void window.revva.shell.openExternal(pr.url)}
+                >
+                  <Badge variant="outline" className={cn('cursor-pointer gap-0.5 text-[9px]', state.cls)}>
+                    <GitPullRequestArrow className="size-2.5" />
+                    <span className="max-w-24 truncate">{pr.number ? `#${pr.number} ${state.label}` : state.label}</span>
+                  </Badge>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {pr.title || `${pr.repo}#${pr.number}`} — {state.label}
+              </TooltipContent>
+            </Tooltip>
+          )
+        })}
       </div>
 
       {t.dependsOn.length > 0 && (
