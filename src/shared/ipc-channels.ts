@@ -91,6 +91,7 @@ export const IPC = {
   commentsTackle: 'revva:comments:tackle',
   githubList: 'revva:github:list',
   githubReview: 'revva:github:review',
+  githubReviewSetup: 'revva:github:review-setup',
   githubChat: 'revva:github:chat',
   githubSolveConflicts: 'revva:github:solve-conflicts',
   githubSolveComments: 'revva:github:solve-comments',

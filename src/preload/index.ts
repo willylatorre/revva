@@ -128,6 +128,7 @@ const api: RevvaApi = {
   github: {
     list: (scope, force) => ipcRenderer.invoke(IPC.githubList, scope, force),
     review: (prUrl) => ipcRenderer.invoke(IPC.githubReview, prUrl),
+    reviewSetup: (sessionId) => ipcRenderer.invoke(IPC.githubReviewSetup, sessionId),
     chat: (prUrl) => ipcRenderer.invoke(IPC.githubChat, prUrl),
     solveConflicts: (prUrl) => ipcRenderer.invoke(IPC.githubSolveConflicts, prUrl),
     solveComments: (prUrl) => ipcRenderer.invoke(IPC.githubSolveComments, prUrl),

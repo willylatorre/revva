@@ -483,6 +483,7 @@ export function registerIpc(): void {
     if (!parsed?.url) throw new Error('Pass a full PR URL or owner/repo#123 (bare numbers are ambiguous across projects).')
     return githubManager.startReview(parsed.url)
   })
+  ipcMain.handle(IPC.githubReviewSetup, (_e, sessionId: unknown) => githubManager.reviewSetup(id(sessionId)))
   ipcMain.handle(IPC.githubChat, (_e, ref: string) => {
     const parsed = parsePrRef(String(ref))
     if (!parsed?.url) throw new Error('Pass a full PR URL.')

@@ -18,7 +18,8 @@ import { workManager } from './pipeline/works'
 import { renderPrompt, DEFAULT_PR_REVIEW_PROMPT } from '@shared/prompts'
 import { parsePrRef, repoFromGitRemote } from '@shared/pr-ref'
 import { ticketKeyFromText } from '@shared/ticket-key'
-import { IPC, type PrAlert, type PrMergeMethod, type PrDetail, type PrStack, type PullRequest, type TaskSessionResult } from '@shared/types'
+import { IPC, type PrAlert, type PrMergeMethod, type PrDetail, type PrStack, type PullRequest, type ReviewSetupStatus, type TaskSessionResult } from '@shared/types'
+import { pushToWindows } from './push'
 
 const exec = execTool
 
@@ -516,7 +517,7 @@ class GitHubManager {
    * later read as a valid checkout. A folder left by an earlier failed clone is
    * moved aside (to `<name>-incomplete`) instead of blocking the new clone.
    */
-  private async ensureReviewClone(owner: string, name: string, reposDir: string): Promise<string> {
+  private async ensureReviewClone(owner: string, name: string, reposDir: string, onProgress?: (stage: string) => void): Promise<string> {
     const repoDir = join(reposDir, name)
     if (existsSync(join(repoDir, '.git'))) return repoDir
     if (existsSync(repoDir)) {
@@ -531,6 +532,7 @@ class GitHubManager {
     const staging = `${repoDir}-cloning`
     rmSync(staging, { recursive: true, force: true })
     try {
+      onProgress?.('Cloning the repository…')
       const clone = await gh(['repo', 'clone', `${owner}/${name}`, staging, '--', '--quiet'], undefined, {
         timeoutMs: CLONE_TIMEOUT_MS
       })
@@ -815,11 +817,12 @@ class GitHubManager {
    * at the PR head. Used by the review session, which reads the code itself;
    * "Chat with this PR" never clones — it just talks about the PR via gh.
    */
-  private async ensureReviewWorktree(pr: PrDetail): Promise<string> {
+  private async ensureReviewWorktree(pr: PrDetail, onProgress?: (stage: string) => void): Promise<string> {
     const root = settingGet<string>('worktreeRoot') || join(app.getPath('home'), `${basename(app.getPath('home'))}-worktrees`)
     const reposDir = join(root, 'gh-reviews', pr.repo.split('/')[0]!)
     mkdirSync(reposDir, { recursive: true })
-    const repoDir = await this.ensureReviewClone(pr.repo.split('/')[0]!, pr.repo.split('/')[1]!, reposDir)
+    onProgress?.('Checking the repository checkout…')
+    const repoDir = await this.ensureReviewClone(pr.repo.split('/')[0]!, pr.repo.split('/')[1]!, reposDir, onProgress)
 
     const branch = `revva/pr-${pr.number}`
     await git(repoDir, ['worktree', 'prune'])
@@ -827,10 +830,14 @@ class GitHubManager {
     const alreadyAdded = existing.ok && existing.out.includes(join(reposDir, `${pr.repo.split('/')[1]}-pr${pr.number}`))
     const worktreeDir = join(reposDir, `${pr.repo.split('/')[1]}-pr${pr.number}`)
     if (!alreadyAdded) {
+      onProgress?.('Fetching the PR branch…')
       const fetch = await git(repoDir, ['fetch', 'origin', `pull/${pr.number}/head:${branch}`], { timeoutMs: FETCH_TIMEOUT_MS })
       if (!fetch.ok) throw new Error(`git fetch of PR head failed: ${fetch.err.slice(0, 300)}`)
+      onProgress?.('Checking out the PR files…')
       const add = await git(repoDir, ['worktree', 'add', '--detach', worktreeDir, branch], { timeoutMs: WORKTREE_TIMEOUT_MS })
       if (!add.ok) throw new Error(`git worktree add failed: ${commandErrorTail(add.out, add.err) || 'git exited without a message'}`)
+    } else {
+      onProgress?.('Using the existing PR checkout…')
     }
     return worktreeDir
   }
@@ -891,35 +898,86 @@ class GitHubManager {
   }
 
   /**
-   * Start a PR review session: find or clone the repo, add a detached worktree at the
-   * PR head, and open a chat-tagged session seeded with the (tunable) review prompt.
+   * Create the review chat first. Prepare the repository and detached PR worktree
+   * in the background, then move the chat and start the review prompt.
    */
   async startReview(prUrl: string): Promise<TaskSessionResult> {
-    const pr = await this.detail(prUrl)
-    const worktreeDir = await this.ensureReviewWorktree(pr)
-
+    const ref = parsePrRef(prUrl)
+    if (!ref?.repo || !ref.url) throw new Error('Could not determine the PR repository and number.')
+    const pending = getDb().prepare(`SELECT session_id FROM github_review_setup WHERE pr_url = ? AND state = 'preparing' ORDER BY updated_at DESC LIMIT 1`).get(ref.url) as { session_id: string } | undefined
+    if (pending) {
+      const existing = chatManager.list().find((chat) => chat.sessionId === pending.session_id)
+      if (existing) return { sessionId: existing.sessionId, title: existing.title, directory: existing.directory }
+    }
+    const [owner] = ref.repo.split('/')
+    if (!owner) throw new Error('Could not determine the PR repository owner.')
+    const root = settingGet<string>('worktreeRoot') || join(app.getPath('home'), `${basename(app.getPath('home'))}-worktrees`)
+    const reposDir = join(root, 'gh-reviews', owner)
+    mkdirSync(reposDir, { recursive: true })
     const sel = roleConfigGet('prReview')
     const chat = await chatManager.create({
-      directory: worktreeDir,
-      title: `${pr.repo}#${pr.number} review`.slice(0, 80),
+      directory: reposDir,
+      title: `${ref.repo}#${ref.number} review`.slice(0, 80),
       agentID: sel?.agentID,
       model: sel?.model,
-      ticketKey: this.ticketForPr(pr),
-      prUrl: pr.url
+      prUrl: ref.url
     })
-    const template = settingGet<string>('prompt.review') || DEFAULT_PR_REVIEW_PROMPT
-    const text = renderPrompt(template, {
-      prUrl: pr.url,
-      prNumber: String(pr.number),
-      repo: pr.repo,
-      title: pr.title,
-      base: pr.baseRefName,
-      head: pr.headRefName
-    })
-    await openCodeService.api.session.prompt({ sessionID: chat.sessionId, text }).catch((err) => {
-      throw new Error(`Session created but review prompt failed: ${describeError(err)}`)
-    })
-    return { sessionId: chat.sessionId, title: chat.title, directory: worktreeDir }
+    this.setReviewSetup(chat.sessionId, ref.url, 'preparing', 'Preparing the PR review…')
+    void this.prepareReviewChat(ref.url, chat.sessionId)
+    return chat
+  }
+
+  reviewSetup(sessionId: string): ReviewSetupStatus | null {
+    const row = getDb().prepare('SELECT state, stage, error FROM github_review_setup WHERE session_id = ?').get(sessionId) as
+      | { state: ReviewSetupStatus['state']; stage: string; error: string | null }
+      | undefined
+    return row ? { state: row.state, stage: row.stage, error: row.error ?? undefined } : null
+  }
+
+  private setReviewSetup(sessionId: string, prUrl: string, state: ReviewSetupStatus['state'], stage: string, error?: string): void {
+    getDb().prepare(`
+      INSERT INTO github_review_setup(session_id, pr_url, state, stage, error, updated_at) VALUES(?,?,?,?,?,?)
+      ON CONFLICT(session_id) DO UPDATE SET state=excluded.state, stage=excluded.stage, error=excluded.error, updated_at=excluded.updated_at
+    `).run(sessionId, prUrl, state, stage, error?.slice(0, 3000) ?? null, Date.now())
+    pushToWindows({ kind: 'github.review-setup', sessionId })
+  }
+
+  private clearReviewSetup(sessionId: string): void {
+    getDb().prepare('DELETE FROM github_review_setup WHERE session_id = ?').run(sessionId)
+    pushToWindows({ kind: 'github.review-setup', sessionId })
+  }
+
+  private async prepareReviewChat(prUrl: string, sessionId: string): Promise<void> {
+    try {
+      this.setReviewSetup(sessionId, prUrl, 'preparing', 'Loading PR details…')
+      const pr = await this.detail(prUrl)
+      const worktreeDir = await this.ensureReviewWorktree(pr, (stage) => this.setReviewSetup(sessionId, prUrl, 'preparing', stage))
+      this.setReviewSetup(sessionId, prUrl, 'preparing', 'Opening the review in its checkout…')
+      await openCodeService.api.session.move({ sessionID: sessionId, directory: worktreeDir })
+      getDb().prepare('UPDATE chat SET directory = ? WHERE session_id = ?').run(worktreeDir, sessionId)
+      const ticketKey = this.ticketForPr(pr)
+      if (ticketKey) await chatManager.setTicket(sessionId, ticketKey)
+      this.setReviewSetup(sessionId, prUrl, 'preparing', 'Starting the review session…')
+      const template = settingGet<string>('prompt.review') || DEFAULT_PR_REVIEW_PROMPT
+      const text = renderPrompt(template, {
+        prUrl: pr.url,
+        prNumber: String(pr.number),
+        repo: pr.repo,
+        title: pr.title,
+        base: pr.baseRefName,
+        head: pr.headRefName
+      })
+      this.clearReviewSetup(sessionId)
+      void openCodeService.api.session.prompt({ sessionID: sessionId, text }).catch((err) => {
+        const message = describeError(err)
+        console.error(`[github] PR review prompt failed for ${prUrl}:`, message)
+        this.setReviewSetup(sessionId, prUrl, 'failed', 'Could not start the review agent.', message)
+      })
+    } catch (err) {
+      const message = describeError(err)
+      console.error(`[github] PR review setup failed for ${prUrl}:`, message)
+      this.setReviewSetup(sessionId, prUrl, 'failed', 'PR review setup failed.', message)
+    }
   }
 }
 

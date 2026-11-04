@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowUp, Check, ChevronDown, CircleAlert, Copy, Cpu, ExternalLink, FileWarning, FolderGit2, FolderOpen, GitBranch, ImageIcon, Loader2, Mic, Square, SquareTerminal, Tag, X } from 'lucide-react'
+import { ArrowUp, Check, ChevronDown, CircleAlert, Copy, Cpu, ExternalLink, FileWarning, FolderGit2, FolderOpen, GitBranch, ImageIcon, Loader2, Mic, RotateCw, Square, SquareTerminal, Tag, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
@@ -1105,6 +1105,29 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
   const [consoleMode, setConsoleMode] = useState(false)
   const chats = useQuery({ queryKey: ['chats'], queryFn: () => window.revva.chat.list() })
   const chat = chats.data?.find((c) => c.sessionId === sessionId)
+  const reviewSetup = useQuery({
+    queryKey: ['github-review-setup', sessionId],
+    queryFn: () => window.revva.github.reviewSetup(sessionId),
+    enabled: !!chat?.prUrl,
+    staleTime: 0,
+    refetchOnWindowFocus: true
+  })
+  const setupLocked = !!chat?.prUrl && (reviewSetup.isFetching || !!reviewSetup.data)
+  useEffect(() => window.revva.events.on((event) => {
+    if (event.kind !== 'github.review-setup' || event.sessionId !== sessionId) return
+    void qc.invalidateQueries({ queryKey: ['github-review-setup', sessionId] })
+    void qc.invalidateQueries({ queryKey: ['chats'] })
+  }), [qc, sessionId])
+  const retryReview = useMutation({
+    mutationFn: async () => {
+      if (!chat?.prUrl) throw new Error('This chat is not linked to a PR.')
+      return window.revva.github.review(chat.prUrl)
+    },
+    onSuccess: (res) => {
+      void qc.invalidateQueries({ queryKey: ['chats'] })
+      onOpenChat?.(res.sessionId)
+    }
+  })
   const works = useQuery({ queryKey: ['works'], queryFn: () => window.revva.work.list() })
   // Load ticket utilities for chats linked before they shared the cockpit.
   // Session identity is essential: another chat for the same ticket is NOT this run.
@@ -1116,7 +1139,7 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
       void qc.invalidateQueries({ queryKey: ['works'] })
       return work
     },
-    enabled: !!(chat?.ticketKey || chat?.prUrl) && !chatWork,
+    enabled: !!(chat?.ticketKey || chat?.prUrl) && !chatWork && !setupLocked,
     retry: false,
     staleTime: Infinity
   })
@@ -1164,10 +1187,24 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
   return (
     <AskAgentProvider ask={sendToChat}>
     <ConversationEnvironment work={chatWork}>
-      {(chat?.ticketKey || chat?.prUrl) && !chatWork && <p role={attachment.isError ? 'alert' : 'status'} className="shrink-0 border-b px-3 py-2 text-xs text-muted-foreground">
+      {(chat?.ticketKey || chat?.prUrl) && !chatWork && !setupLocked && <p role={attachment.isError ? 'alert' : 'status'} className="shrink-0 border-b px-3 py-2 text-xs text-muted-foreground">
         {attachment.error instanceof Error ? `Could not load conversation utilities: ${attachment.error.message}` : 'Loading conversation utilities…'}
         {attachment.isError && <Button size="sm" variant="outline" onClick={() => void attachment.refetch()}>Retry</Button>}
       </p>}
+      {reviewSetup.data && <div role={reviewSetup.data.state === 'failed' ? 'alert' : 'status'} className="flex shrink-0 items-start gap-2 border-b px-4 py-2 text-xs">
+        {reviewSetup.data.state === 'preparing'
+          ? <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin text-muted-foreground" />
+          : <CircleAlert className="mt-0.5 size-4 shrink-0 text-status-warning" />}
+        <div className="min-w-0 flex-1">
+          <p className="font-medium">{reviewSetup.data.state === 'preparing' ? 'Preparing PR review' : 'PR review setup failed'}</p>
+          <p className="text-muted-foreground">{reviewSetup.data.stage}</p>
+          {reviewSetup.data.error && <p className="mt-1 whitespace-pre-wrap break-words text-destructive">{reviewSetup.data.error}</p>}
+        </div>
+        {reviewSetup.data.state === 'failed' && <Button size="sm" variant="outline" disabled={retryReview.isPending} onClick={() => retryReview.mutate()}>
+          {retryReview.isPending ? <Loader2 data-icon="inline-start" className="animate-spin" /> : <RotateCw data-icon="inline-start" />}
+          Retry
+        </Button>}
+      </div>}
       {tag.error && <ActionError action="link ticket" error={tag.error instanceof Error ? tag.error.message : String(tag.error)} className="shrink-0 border-b px-4 py-2 text-sm" />}
     <TranscriptView
       key={sessionId}
@@ -1175,15 +1212,17 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
       drive={chatWork ? workDrive : chatDrive}
       work={chatWork}
       hideSessionDetails
+      readOnly={setupLocked}
       emptyHint={chat?.ticketKey ? `Ask anything about ${chat.ticketKey}.` : 'Ask anything about this project — this chat is not attached to a ticket.'}
       onNewSession={onOpenChat && chat ? newSession : undefined}
-      body={consoleMode ? <OpenCodeConsole key={sessionId} sessionId={sessionId} /> : undefined}
+      body={consoleMode && !setupLocked ? <OpenCodeConsole key={sessionId} sessionId={sessionId} /> : undefined}
       header={
         <>
           {/* The conversation's name (and its rename affordance) lives in the
               app's top bar — repeating it here only duplicated the title. */}
-          {chat && <ChatRepoStatus sessionId={sessionId} directory={chat.directory} />}
-          {chat && (
+          {setupLocked ? <span aria-hidden className="min-w-0 flex-1" /> : chat && <ChatRepoStatus sessionId={sessionId} directory={chat.directory} />}
+          {!setupLocked && chat && (
+            <>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="outline" size="sm" disabled={tag.isPending} className="shrink-0">
@@ -1214,7 +1253,6 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
                 {chat.ticketKey && <DropdownMenuItem onSelect={() => tag.mutate(null)}>Remove ticket link</DropdownMenuItem>}
               </DropdownMenuContent>
             </DropdownMenu>
-          )}
           {chatWork && <ConversationActions work={chatWork} />}
           {chat && !chatWork && <ChatReviewButton sessionId={sessionId} directory={chat.directory} />}
           {(chatWork?.prUrl || chat?.prUrl) && (
@@ -1238,6 +1276,7 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
                 variant={consoleMode ? 'secondary' : 'ghost'}
                 size="sm"
                 className="shrink-0"
+                disabled={setupLocked}
                 aria-pressed={consoleMode}
                 onClick={() => setConsoleMode((on) => !on)}
               >
@@ -1250,6 +1289,8 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
               {consoleMode ? "Show Revva's conversation view" : "Show this session in OpenCode's own interface"}
             </TooltipContent>
           </Tooltip>
+            </>
+          )}
         </>
       }
     />

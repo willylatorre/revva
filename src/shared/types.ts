@@ -792,6 +792,13 @@ export const taskSessionResultSchema = z.object({
 })
 export type TaskSessionResult = z.infer<typeof taskSessionResultSchema>
 
+export const reviewSetupStatusSchema = z.object({
+  state: z.enum(['preparing', 'failed']),
+  stage: z.string(),
+  error: z.string().optional()
+})
+export type ReviewSetupStatus = z.infer<typeof reviewSetupStatusSchema>
+
 /* ---------- Inbox (M2) ---------- */
 
 export const inboxFieldSchema = z.object({
@@ -975,6 +982,7 @@ export const pushEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('github.alerts'), items: z.array(prAlertSchema) }),
   /** Fresh PR snapshot for one scope (poller or refresh); feeds boards directly. */
   z.object({ kind: z.literal('github.prs'), scope: z.enum(['mine', 'review']), items: z.array(pullRequestSchema) }),
+  z.object({ kind: z.literal('github.review-setup'), sessionId: z.string() }),
   z.object({ kind: z.literal('review.updated'), workId: z.string(), round: z.number(), reviews: z.array(reviewRowSchema) }),
   /** Live streamed text from a reviewer/fixer session. */
   z.object({ kind: z.literal('review.delta'), workId: z.string(), sessionId: z.string(), messageId: z.string(), text: z.string() }),
@@ -1154,6 +1162,8 @@ export interface RevvaApi {
     list(scope?: 'mine' | 'review', force?: boolean): Promise<PullRequest[]>
     /** Spin up a PR-review agent session (worktree checked out in the background). */
     review(prUrl: string): Promise<TaskSessionResult>
+    /** Current setup phase for a PR-review chat, or null after setup completes. */
+    reviewSetup(sessionId: string): Promise<ReviewSetupStatus | null>
     /** New chat linked to the PR (+ its ticket), checked out at the PR's branch; opens directly. */
     chat(prUrl: string): Promise<TaskSessionResult>
     /** Start a writable chat in an isolated worktree to resolve PR conflicts. */
