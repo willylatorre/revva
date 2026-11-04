@@ -385,7 +385,7 @@ class ReviewManager {
   }
 
   /** Retry one role without invalidating other reviewers' results for the same commit. */
-  async retryReview(workId: string, reviewId: number): Promise<void> {
+  async retryReview(workId: string, reviewId: number, modelOverride?: ModelRef | null): Promise<void> {
     await this.recover()
     const work = getDb().prepare('SELECT * FROM work WHERE id = ?').get(workId) as
       | { id: string; ticket_key: string; branch: string; worktree_dir: string; state: string; review_head: string | null; review_base: string | null }
@@ -424,7 +424,7 @@ class ReviewManager {
         })
         this.settledRounds.add(`${workId}:${round}`)
         this.starting.delete(workId)
-        await this.dispatchFixer(workId, round, changes, row)
+        await this.dispatchFixer(workId, round, changes, row, modelOverride)
         return
       }
       const [head, status] = await Promise.all([
@@ -441,15 +441,16 @@ class ReviewManager {
         throw new Error('The impeccable skill is unavailable. Install or enable it in OpenCode, then retry UI review.')
       }
       const now = Date.now()
+      const model = modelOverride === undefined ? row.model : modelOverride ?? undefined
       const result = getDb().prepare(
         `INSERT INTO review(work_id, round, role, session_id, status, findings, error, agent_id, provider_id, model_id, variant, created_at, updated_at)
          VALUES(?,?,?,NULL,'pending','',NULL,?,?,?,?,?,?)`
-      ).run(workId, round, row.role, row.agentID ?? null, row.model?.providerID ?? null, row.model?.id ?? null, row.model?.variant ?? null, now, now)
+      ).run(workId, round, row.role, row.agentID ?? null, model?.providerID ?? null, model?.id ?? null, model?.variant ?? null, now, now)
       this.settledRounds.delete(`${workId}:${round}`)
       workManager.setReviewState(workId, 'REVIEW')
       this.audit(workId, round, 'reviewer-retried', row.role)
       this.push(workId, round)
-      await this.runReviewer(work, round, Number(result.lastInsertRowid), row.role as ReviewRole, { agentID: row.agentID, model: row.model }, skills, scope)
+      await this.runReviewer(work, round, Number(result.lastInsertRowid), row.role as ReviewRole, { agentID: row.agentID, model }, skills, scope)
       this.push(workId, round)
     } finally {
       unfence()
@@ -808,14 +809,17 @@ class ReviewManager {
   }
 
   /** Fan-in: one fixer session gets all findings from the round. */
-  private async dispatchFixer(workId: string, round: number, changes: ReviewRow[], resume?: ReviewRow): Promise<void> {
+  private async dispatchFixer(workId: string, round: number, changes: ReviewRow[], resume?: ReviewRow, modelOverride?: ModelRef | null): Promise<void> {
     const work = getDb().prepare('SELECT * FROM work WHERE id = ?').get(workId) as
       | { id: string; ticket_key: string; branch: string; worktree_dir: string; mode: string; review_sel: string | null }
       | undefined
     if (!work) return
     const perRun = (work.review_sel ? JSON.parse(work.review_sel) : undefined) as Record<string, { agentID?: string; model?: ModelRef } | undefined> | undefined
     const configured = resolveSel(workId, 'fixer', perRun)
-    const sel = resume ? { agentID: resume.agentID ?? configured.agentID, model: resume.model ?? configured.model } : configured
+    const sel = {
+      agentID: resume?.agentID ?? configured.agentID,
+      model: modelOverride === undefined ? resume?.model ?? configured.model : modelOverride ?? undefined
+    }
     const now = Date.now()
     const res = getDb()
       .prepare(
@@ -835,7 +839,7 @@ class ReviewManager {
       const build = getDb().prepare('SELECT session_id FROM work WHERE id = ?').get(workId) as { session_id: string | null }
       await agentSessions.requireStoppedTree(build.session_id)
       await this.requireImplementationCheckout(build.session_id, work.worktree_dir)
-      const previous = resume?.sessionId ? await api.session.get({ sessionID: resume.sessionId }).catch((err) => {
+      const previous = modelOverride === undefined && resume?.sessionId ? await api.session.get({ sessionID: resume.sessionId }).catch((err) => {
         if ((err as { _tag?: string })._tag === 'SessionNotFoundError') return undefined
         throw err
       }) : undefined

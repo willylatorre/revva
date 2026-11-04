@@ -130,7 +130,7 @@ export function WorkAgentActivity({ work }: { work: WorkSummary }): React.JSX.El
           <DialogDescription>{statusText(selected)}{selected?.model ? ` · ${models.data?.find((model) => model.providerID === selected.model?.providerID && model.id === selected.model?.id)?.name ?? selected.model.id}` : ''}</DialogDescription>
         </DialogHeader>
         {selected?.error && <p role={isReviewStopped(selected) ? 'status' : 'alert'} className={cn('break-words text-sm', isReviewStopped(selected) ? 'text-muted-foreground' : 'text-destructive')}>{selected.error}</p>}
-        {selected && <ReviewAgentActions row={selected} state={work.state} auto={work.mode === 'auto'} onRelaunched={(next) => setSelectedId(next?.id ?? null)} />}
+        {selected && <ReviewAgentActions key={selected.id} row={selected} state={work.state} auto={work.mode === 'auto'} onRelaunched={(next) => setSelectedId(next?.id ?? null)} />}
         {selected && inbox.filter((item) => item.sessionID === selected.sessionId).length > 0 && <div className="max-h-[25vh] overflow-y-auto">
           {inbox.filter((item) => item.sessionID === selected.sessionId).map((item) => item.kind === 'form'
             ? <FormCard key={item.id} item={item} /> : <PermissionCard key={item.id} item={item} />)}

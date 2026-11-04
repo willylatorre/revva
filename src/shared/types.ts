@@ -1094,7 +1094,7 @@ export interface RevvaApi {
     /** Full review cycle from a chat: attach utilities, commit if asked, run reviewers → fixer → re-review. */
     chatReview(input: StartChatReviewInput): Promise<ChatReviewResult>
     /** Retry one reviewer or failed fixer in the latest round. */
-    reviewRetry(workId: string, reviewId: number): Promise<void>
+    reviewRetry(workId: string, reviewId: number, modelOverride?: ModelRef | null): Promise<void>
     /** Stop one running reviewer and judge the round from its partial report. */
     reviewFinishEarly(workId: string, reviewId: number): Promise<void>
     /** Stop reviewers/fixer, including sessions still running after a restart. No deletion. */

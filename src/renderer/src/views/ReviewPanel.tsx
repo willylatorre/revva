@@ -3,12 +3,17 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CircleAlert, CircleCheck, CirclePause, Loader2, Scale, ScanEye, Sparkles, Wrench, XCircle } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { ActionError } from '@/lib/ask-agent'
 import { isReviewStopped, reviewRowTone, reviewStatusLabels, statusTones } from '@/lib/agent-status'
 import { SessionIdButton, TranscriptView, type TranscriptDrive } from './Chat'
-import type { PipelineRole, PushEvent, ReviewRow, WorkState } from '@shared/types'
+import type { ModelRef, PipelineRole, PushEvent, ReviewRow, WorkState } from '@shared/types'
+import { modelKeyOf } from './NewChatDialog'
+
+const SAME_MODEL = '__same_model__'
+const SERVICE_DEFAULT = '__service_default__'
 
 const roleMeta: Partial<Record<PipelineRole, { label: string; icon: React.JSX.Element }>> = {
   sol: { label: 'Sol-loop', icon: <ScanEye className="size-3.5" /> },
@@ -184,6 +189,8 @@ export function ReviewAgentActions({ row, state, auto, onRelaunched }: {
   const qc = useQueryClient()
   const reviews = useQuery({ queryKey: ['reviews', row.workId], queryFn: () => window.revva.work.reviews(row.workId) })
   const queue = useQuery({ queryKey: ['work-queue', row.workId], queryFn: () => window.revva.work.queue(row.workId) })
+  const models = useQuery({ queryKey: ['models'], queryFn: () => window.revva.inventory.models(), staleTime: 60_000 })
+  const [modelChoice, setModelChoice] = useState(SAME_MODEL)
   const rows = reviews.data ?? []
   const round = rows.reduce((latest, item) => Math.max(latest, item.round), 0)
   const latest = rows.filter((item) => item.round === round && item.role === row.role).at(-1)
@@ -202,13 +209,20 @@ export function ReviewAgentActions({ row, state, auto, onRelaunched }: {
     : undefined
   const label = roleMeta[row.role]?.label ?? row.role
   const canFinishEarly = row.role !== 'fixer' && (row.status === 'running' || row.status === 'pending')
+  const getModelOverride = (): ModelRef | null | undefined => {
+    if (modelChoice === SAME_MODEL) return undefined
+    if (modelChoice === SERVICE_DEFAULT) return row.model ? null : undefined
+    const selected = models.data?.find((model) => modelKeyOf(model.providerID, model.id) === modelChoice)
+    if (!selected || (row.model?.providerID === selected.providerID && row.model.id === selected.id)) return undefined
+    return { providerID: selected.providerID, id: selected.id }
+  }
   const action = useMutation({
-    mutationFn: (kind: 'retry' | 'stop' | 'early') => kind === 'stop'
+    mutationFn: ({ kind, model }: { kind: 'retry' | 'stop' | 'early'; model?: ModelRef | null }) => kind === 'stop'
       ? window.revva.work.reviewStop(row.workId)
       : kind === 'early'
         ? window.revva.work.reviewFinishEarly(row.workId, row.id)
-        : window.revva.work.reviewRetry(row.workId, row.id),
-    onSuccess: async (_result, kind) => {
+        : window.revva.work.reviewRetry(row.workId, row.id, model),
+    onSuccess: async (_result, { kind }) => {
       if (kind === 'retry') {
         const fresh = await reviews.refetch()
         onRelaunched(fresh.data?.filter((item) => item.role === row.role).at(-1))
@@ -222,21 +236,39 @@ export function ReviewAgentActions({ row, state, auto, onRelaunched }: {
   })
   return <div className="flex shrink-0 flex-col gap-2">
     <div className="flex flex-wrap items-center gap-2">
-      <Button size="sm" variant="outline" disabled={!!reason || action.isPending} onClick={() => action.mutate('retry')}>
-        {action.isPending && action.variables === 'retry' ? 'Starting…' : row.role === 'fixer' && row.status === 'error' ? 'Resume fixer' : `${row.status === 'error' ? 'Retry' : 'Relaunch'} ${label}`}
+      {!reason && <label className="flex items-center gap-2 text-xs text-muted-foreground">
+        <span>Model for this attempt</span>
+        <Select value={modelChoice} onValueChange={(value) => setModelChoice(value ?? SAME_MODEL)}>
+          <SelectTrigger size="sm" aria-label="Model for this attempt" disabled={models.isPending || models.isError || action.isPending}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={SAME_MODEL}>Keep current model</SelectItem>
+            <SelectItem value={SERVICE_DEFAULT}>Use service default</SelectItem>
+            {(models.data ?? []).map((model) => (
+              <SelectItem key={modelKeyOf(model.providerID, model.id)} value={modelKeyOf(model.providerID, model.id)} disabled={!!model.gated} title={model.gated}>
+                {model.name || model.id}<span className="text-muted-foreground">{model.providerID}</span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </label>}
+      <Button size="sm" variant="outline" disabled={!!reason || action.isPending} onClick={() => action.mutate({ kind: 'retry', model: getModelOverride() })}>
+        {action.isPending && action.variables?.kind === 'retry' ? 'Starting…' : row.role === 'fixer' && row.status === 'error' ? 'Resume fixer' : `${row.status === 'error' ? 'Retry' : 'Relaunch'} ${label}`}
       </Button>
       {canFinishEarly && <Button size="sm" variant="outline" disabled={action.isPending}
         title="Interrupt this reviewer and judge the round from its report so far. A report without a final verdict counts as changes — this never approves silently."
-        onClick={() => action.mutate('early')}>
-        {action.isPending && action.variables === 'early' ? 'Ending…' : 'End early'}
+        onClick={() => action.mutate({ kind: 'early' })}>
+        {action.isPending && action.variables?.kind === 'early' ? 'Ending…' : 'End early'}
       </Button>}
-      {(running || state === 'WAITING_HUMAN') && <Button size="sm" variant="ghost" disabled={action.isPending} onClick={() => action.mutate('stop')}>
-        {action.isPending && action.variables === 'stop' ? 'Stopping…' : 'Stop review'}
+      {(running || state === 'WAITING_HUMAN') && <Button size="sm" variant="ghost" disabled={action.isPending} onClick={() => action.mutate({ kind: 'stop' })}>
+        {action.isPending && action.variables?.kind === 'stop' ? 'Stopping…' : 'Stop review'}
       </Button>}
     </div>
     <p className="text-xs text-muted-foreground">{reason ?? (row.role === 'fixer'
-      ? 'Keeps partial changes and reuses the original session when available. Nothing is reset or discarded.'
+      ? 'Keeps partial changes. A model change starts a new fixer session; otherwise it resumes the original when available. Nothing is reset or discarded.'
       : auto ? 'Other reviewer results are kept; AUTO continues when the gates pass.' : 'Relaunches only this reviewer if the reviewed checkout is unchanged.')}</p>
+    {models.isError && !reason && <p role="status" className="text-xs text-muted-foreground">Could not load models; retry will keep the current model.</p>}
     {action.error && <ActionError action={`relaunch ${label}`} error={action.error.message.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '')} className="text-sm" onSent={() => onRelaunched()} />}
   </div>
 }

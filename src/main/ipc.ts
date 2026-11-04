@@ -423,9 +423,10 @@ export function registerIpc(): void {
   })
   ipcMain.handle(IPC.workChatReview, (_e, input: unknown) => workManager.startChatReview(startChatReviewInputSchema.parse(input)))
   ipcMain.handle(IPC.workReviewStop, (_e, workId: string) => reviewManager.stopWork(String(workId)))
-  ipcMain.handle(IPC.workReviewRetry, (_e, workId: string, reviewId: number) => {
+  ipcMain.handle(IPC.workReviewRetry, (_e, workId: string, reviewId: number, modelOverride?: unknown) => {
     if (!Number.isSafeInteger(reviewId) || reviewId < 1) throw new Error('Invalid review ID.')
-    return reviewManager.retryReview(String(workId), reviewId)
+    const model = modelOverride === undefined ? undefined : z.union([modelRefSchema, z.null()]).parse(modelOverride)
+    return reviewManager.retryReview(String(workId), reviewId, model)
   })
   ipcMain.handle(IPC.workReviewFinishEarly, (_e, workId: string, reviewId: number) => {
     if (!Number.isSafeInteger(reviewId) || reviewId < 1) throw new Error('Invalid review ID.')
