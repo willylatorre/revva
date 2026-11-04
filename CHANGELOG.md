@@ -7,6 +7,10 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
+- (nothing yet)
+
+## [1.10.0] - 2026-11-04
+
 - **PRs and Jira tickets link both ways** — a PR whose title or branch carries a ticket key (the usual prefix) now shows that ticket's live status on its card, and clicking the badge opens the ticket on Jira. The ticket card shows each PR waiting on it with its state — open, draft, approved, changes requested, conflicts, merged or shipped — and clicking it opens the PR. A PR that names more than one ticket stays unlinked rather than guessing. The lookup reads cached status first and asks Jira for a batch refresh at most once a minute, so switching boards never waits on a slow request.
 
   PRs shipped by Revva keep their link after merging, so a merged PR still reads on the ticket instead of vanishing with the open-PR list. The same ticket row appears in the PR details dialog.
