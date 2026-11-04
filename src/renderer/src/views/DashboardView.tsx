@@ -17,7 +17,7 @@ import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import { useTriage } from '@/views/InboxView'
-import { useGithubPrs } from '@/views/GitHubView'
+import { useGithubPrs } from '@/lib/github-prs'
 import type { WorkSummary } from '@shared/types'
 
 type Section = 'inbox' | 'jira' | 'github' | 'scripts' | 'setup'

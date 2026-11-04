@@ -61,6 +61,7 @@ export const IPC = {
   jiraDisconnect: 'revva:jira:disconnect',
   boardFetch: 'revva:board:fetch',
   jiraDetail: 'revva:jira:detail',
+  jiraTicketBriefs: 'revva:jira:ticket-briefs',
   jiraReadyToTest: 'revva:jira:ready-to-test',
   workStart: 'revva:work:start',
   workList: 'revva:work:list',

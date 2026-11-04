@@ -462,6 +462,16 @@ export const ticketDetailSchema = z.object({
 })
 export type TicketDetail = z.infer<typeof ticketDetailSchema>
 
+/** The slice of a ticket a PR card needs: status and a link, without the raw payload. */
+export const linkedTicketSchema = z.object({
+  key: z.string(),
+  summary: z.string(),
+  status: z.string(),
+  statusCategory: z.string(),
+  url: z.string().optional()
+})
+export type LinkedTicket = z.infer<typeof linkedTicketSchema>
+
 export const jiraStatusSchema = z.object({
   connected: z.boolean(),
   expired: z.boolean(),
@@ -698,7 +708,9 @@ export const pullRequestSchema = z.object({
   /** Open review threads the user still has to answer (enriched). */
   unresolvedThreads: z.number().optional(),
   /** More unresolved threads than when the user last looked. */
-  hasNewReviewThreads: z.boolean().optional()
+  hasNewReviewThreads: z.boolean().optional(),
+  /** Jira ticket this PR belongs to, read from the PR title, its head branch, or a linked work. */
+  ticketKey: z.string().optional()
 })
 export type PullRequest = z.infer<typeof pullRequestSchema>
 
@@ -1076,6 +1088,8 @@ export interface RevvaApi {
     /** Sub-tickets of one issue, in board order. */
     /** Body, comments, sub-tasks and links of one issue; fetched when the details dialog opens. */
     detail(key: string): Promise<TicketDetail>
+    /** Status of several tickets at once (cached; one JQL refresh at most per minute). */
+    tickets(keys: string[]): Promise<LinkedTicket[]>
     /** Manual-only Ready to Test move; Revva refuses while a linked PR is unmerged unless confirmed. */
     readyToTest(key: string, confirmed?: boolean): Promise<ReadyToTestResult>
   }

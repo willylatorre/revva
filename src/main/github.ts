@@ -272,7 +272,7 @@ class GitHubManager {
     const seenUrls = new Set<string>()
     const prs = rows
       .filter((r) => r.url && r.number && !seenUrls.has(r.url) && !!seenUrls.add(r.url))
-      .map((r) => ({
+      .map((r): PullRequest => ({
         repo: r.repository?.nameWithOwner ?? 'unknown',
         number: r.number!,
         title: r.title ?? '',
@@ -491,14 +491,14 @@ class GitHubManager {
     if (linked.length === 1) return linked[0]!.ticket_key
     if (linked.length > 1) return undefined
     // The title is the authoritative source; the branch is only a fallback.
-    return ticketKeyFromText(pr.title) ?? ticketKeyFromText(pr.headRefName)
+    return ticketKeyFromText(pr.title) ?? ticketKeyFromText(pr.headRefName ?? '')
   }
 
   /** Same resolution for a list row, so a PR card can show its ticket without a detail fetch. */
   private ticketForRow(pr: PullRequest): string | undefined {
     const linked = getDb().prepare('SELECT DISTINCT ticket_key FROM work WHERE pr_url = ?').all(pr.url) as Array<{ ticket_key: string }>
     if (linked.length > 1) return undefined
-    return linked[0]?.ticket_key || ticketKeyFromText(pr.title) || ticketKeyFromText(pr.headRefName) || undefined
+    return linked[0]?.ticket_key || ticketKeyFromText(pr.title) || ticketKeyFromText(pr.headRefName ?? '') || undefined
   }
 
   /**

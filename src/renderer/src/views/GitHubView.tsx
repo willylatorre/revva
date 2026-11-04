@@ -21,6 +21,7 @@ import {
   RefreshCw,
   ScanEye,
   Github,
+  Kanban,
   Undo2,
   X
 } from 'lucide-react'
@@ -39,7 +40,10 @@ import { CardBoard, CardZone, moveToZone } from '@/components/CardBoard'
 import { PrInfoDialog } from './PrInfoDialog'
 import { useCardOrder } from '@/lib/use-card-order'
 import { cn } from '@/lib/utils'
-import type { PrAlert, PrMergeMethod, PullRequest } from '@shared/types'/** Unseen PR events (comments/conflicts/approvals) — sidebar bell + polling feed.
+import { useGithubPrs } from '@/lib/github-prs'
+import { useLinkedTickets } from '@/lib/linked-work'
+import { jiraStatusClasses } from '@/lib/status-colors'
+import type { LinkedTicket, PrAlert, PrMergeMethod, PullRequest } from '@shared/types'/** Unseen PR events (comments/conflicts/approvals) — sidebar bell + polling feed.
  *  The feed is push-based (main sends it after every poll), so no refetch
  *  interval and no focus-refetch: one fetch on app start, pushes from there. */
 export function useGithubAlerts(): PrAlert[] {
@@ -60,22 +64,9 @@ export function useGithubAlerts(): PrAlert[] {
 }
 
 /** PR board data for one scope: main answers instantly from its polled snapshot
- *  and pushes every background refresh, so no refetch interval is needed here. */
-export function useGithubPrs(scope: 'mine' | 'review') {
-  const qc = useQueryClient()
-  const q = useQuery({
-    queryKey: ['gh-prs', scope],
-    queryFn: () => window.revva.github.list(scope),
-    staleTime: 30_000,
-    refetchOnWindowFocus: false
-  })
-  useEffect(() => {
-    return window.revva.events.on((e) => {
-      if (e.kind === 'github.prs' && e.scope === scope) qc.setQueryData(['gh-prs', scope], e.items)
-    })
-  }, [qc, scope])
-  return q
-}
+ *  and pushes every background refresh, so no refetch interval is needed here.
+ *  Lives in `lib/` so the Jira board can read the same list without importing a view. */
+export { useGithubPrs } from '@/lib/github-prs'
 
 /**
  * GitHub tab: open PRs (authored / review-requested) via the user's `gh` CLI.
@@ -382,6 +373,8 @@ function PrBoard({
   const { zones, commit } = useCardOrder('gh', liveIds)
   const [laterOpen, setLaterOpen] = useState(false)
   const byUrl = useMemo(() => new Map(visible.map((pr) => [pr.url, pr])), [visible])
+  /** Tickets named by the visible PRs — the card badge shows their live status. */
+  const linkedTickets = useLinkedTickets(visible.flatMap((pr) => (pr.ticketKey ? [pr.ticketKey] : [])))
   /**
    * Stack chain per PR: every visible layer of one stack resolves to
    * `${repo}@<branch closest to trunk>`, so the trunk-based base PR and the
@@ -452,6 +445,7 @@ function PrBoard({
     return (
       <PrCard
         pr={pr}
+        ticket={pr.ticketKey ? linkedTickets.get(pr.ticketKey) : undefined}
         zone={zone}
         busy={busyUrl === url}
         merging={mergingUrl === url}
@@ -523,6 +517,7 @@ function PrBoard({
 /** Compact PR card: fits the 3-across minmax grid, zone-aware actions. */
 function PrCard({
   pr,
+  ticket,
   zone,
   busy,
   merging,
@@ -545,6 +540,8 @@ function PrCard({
   flash
 }: {
   pr: PullRequest
+  /** Ticket named by this PR, when the brief lookup found it. */
+  ticket: LinkedTicket | undefined
   zone: 'important' | 'main' | 'later'
   busy: boolean
   merging: boolean
@@ -619,6 +616,34 @@ function PrCard({
           </Badge>
         )}
         {pr.isDraft && <Badge variant="outline" className="shrink-0 text-[9px]">draft</Badge>}
+        {pr.ticketKey && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="shrink-0"
+                title={ticket?.url ? `Open ${pr.ticketKey} on Jira` : `${pr.ticketKey} — status unavailable`}
+                onClick={() => (ticket?.url ? void window.revva.shell.openExternal(ticket.url) : setInfoOpen(true))}
+              >
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    'cursor-pointer gap-0.5 font-mono text-[9px]',
+                    ticket ? jiraStatusClasses(ticket.status, ticket.statusCategory) : 'text-muted-foreground'
+                  )}
+                >
+                  <Kanban className="size-2.5" />
+                  {pr.ticketKey}
+                </Badge>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>
+              {ticket
+                ? `${pr.ticketKey} · ${ticket.status}${ticket.summary ? ` — ${ticket.summary}` : ''}`
+                : `${pr.ticketKey} — status unavailable`}
+            </TooltipContent>
+          </Tooltip>
+        )}
         {stacked && (
           <Badge variant="outline" className="shrink-0 gap-0.5 border-violet-500/40 text-[9px] text-violet-600 dark:text-violet-400" title={`Stacked on ${pr.baseRefName} — merge the PR below first`}>
             <Layers className="size-2.5" />
