@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { Loader2, RotateCw, SquareArrowOutUpRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ActionError } from '@/lib/ask-agent'
-import type { WebviewElement, WebviewLoadFailure } from '@/webview'
+import type { WebviewElement, WebviewLoadFailure, WebviewProcessGone } from '@/webview'
 
 /**
  * OpenCode's own web interface, showing one session inside Revva.
@@ -14,7 +14,6 @@ import type { WebviewElement, WebviewLoadFailure } from '@/webview'
  * initial load, a crash and a hard failure are reported here.
  */
 export function OpenCodeConsole({ sessionId }: { sessionId: string }): React.JSX.Element {
-  const qc = useQueryClient()
   // A restarted service signs cookies with a new secret, so its error page can
   // sit on screen while the renderer still thinks everything is fine. Waiting
   // for the endpoint to change is not enough: the service usually comes back on
@@ -43,6 +42,10 @@ export function OpenCodeConsole({ sessionId }: { sessionId: string }): React.JSX
   })
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  // Auto-remounting a guest that ends routinely must not become a reload loop.
+  // A successful load resets the count, so only repeated death without a load
+  // reaches the limit and stops trying.
+  const autoReloads = useRef(0)
   const webviewRef = useRef<WebviewElement | null>(null)
 
   useEffect(() => {
@@ -54,7 +57,10 @@ export function OpenCodeConsole({ sessionId }: { sessionId: string }): React.JSX
     // failure leaves a blank page worth reporting. Never call `getURL()` or
     // `loadURL()` on this element: both throw until it has attached to the DOM
     // and emitted `dom-ready`, and that throw unmounts the whole chat.
-    const onLoaded = (): void => setLoading(false)
+    const onLoaded = (): void => {
+      autoReloads.current = 0
+      setLoading(false)
+    }
     const onFailed = (event: WebviewLoadFailure): void => {
       if (!event.isMainFrame) return
       // -3 is ERR_ABORTED, emitted for ordinary in-page navigations.
@@ -62,26 +68,51 @@ export function OpenCodeConsole({ sessionId }: { sessionId: string }): React.JSX
       setLoading(false)
       setLoadError(`OpenCode's interface did not load${event.errorDescription ? `: ${event.errorDescription}` : ''} (${event.errorCode}).`)
     }
-    const onCrashed = (): void => {
+    // The guest process ends for routine reasons too: the tab was closed, the
+    // process was discarded under memory pressure, or it exited cleanly. Those
+    // are not crashes, and showing an error panel for them leaves a dead panel
+    // that only a manual retry clears. Remount instead, which reloads the same
+    // session; only a real failure is reported, together with its reason.
+    const onGone = (event: WebviewProcessGone): void => {
+      if (event.reason === 'clean-exit' || event.reason === 'killed' || event.reason === 'memory-eviction') {
+        if (autoReloads.current >= 3) {
+          setLoading(false)
+          setLoadError('OpenCode’s interface keeps stopping. Switch to OpenCode in the browser, or try again.')
+          return
+        }
+        autoReloads.current += 1
+        setLoadError(null)
+        setLoading(true)
+        setGeneration((count) => count + 1)
+        return
+      }
       setLoading(false)
-      setLoadError('OpenCode’s interface stopped unexpectedly.')
+      setLoadError(
+        event.reason === 'oom'
+          ? 'OpenCode’s interface ran out of memory. Close some other views and try again.'
+          : `OpenCode’s interface stopped unexpectedly (${event.reason}${event.exitCode ? `, exit ${event.exitCode}` : ''}).`
+      )
     }
     node.addEventListener('did-finish-load', onLoaded)
     node.addEventListener('did-fail-load', onFailed)
-    node.addEventListener('render-process-gone', onCrashed)
+    node.addEventListener('render-process-gone', onGone)
     return () => {
       node.removeEventListener('did-finish-load', onLoaded)
       node.removeEventListener('did-fail-load', onFailed)
-      node.removeEventListener('render-process-gone', onCrashed)
+      node.removeEventListener('render-process-gone', onGone)
     }
     // `generation` remounts the element, so the listeners must re-attach to the
     // new one even though the resolved link is the same.
   }, [target.data, generation])
 
   const retry = (): void => {
+    // One action, one path: the generation is part of the query key, so bumping
+    // it refetches the link and remounts the element. Invalidating the query as
+    // well would resolve the link twice for a single click.
+    autoReloads.current = 0
     setLoadError(null)
+    setLoading(true)
     setGeneration((count) => count + 1)
-    void qc.invalidateQueries({ queryKey: ['opencode-ui', sessionId] })
   }
   const openInBrowser = useMutation({
     mutationFn: async () => {
