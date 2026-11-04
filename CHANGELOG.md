@@ -7,6 +7,10 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
+- (nothing yet)
+
+## [1.11.0] - 2026-11-04
+
 - **Large PR reviews survive slow checkout** — PR worktree creation now has a 30-minute budget instead of 60 seconds. Failures report the final Git output, including timeout details.
 - **Every open chat shows its Git checkout** — the chat header displays the repository, working folder, branch (or detached HEAD), and changed-file count, refreshing every ten seconds. Hover over the folder to see its full path. Open it in VS Code from the same header.
 - **PR review setup runs in the background** — clicking Review opens a new chat right away. The chat shows clone, fetch, and checkout phases while you continue using Revva. Setup failures stay visible and offer Retry.
