@@ -17,6 +17,7 @@ import { eventBus, type RawEvent } from '../opencode/bus'
 import { inboxManager } from '../opencode/inbox'
 import { getTicket } from '../jira/board'
 import { getDb, settingGet } from '../db'
+import { worktreesDirFor } from '../worktree-paths'
 import { sessionIndex } from '../opencode/session-index'
 import { streamBuffer } from '../opencode/stream-buffer'
 import { pushToWindows } from '../push'
@@ -797,7 +798,7 @@ class WorkManager {
    * contract is enforced by plain git.
    */
   private async createWorktree(repoDir: string, branch: string, baseRef?: string, resume = false): Promise<string> {
-    const root = settingGet<string>('worktreeRoot') || join(repoDir, '..', `${basename(repoDir)}-worktrees`)
+    const root = worktreesDirFor(repoDir)
     const name = branch.replace(/\//g, '-')
 
     // Both creation paths use the same explicit base, never the checkout's

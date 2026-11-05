@@ -19,13 +19,14 @@
  * agent misjudges.
  */
 import { execTool } from './toolchain'
-import { existsSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { lstat } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { join } from 'node:path'
 import { openCodeService } from './opencode/service'
 import { chatManager } from './opencode/chats'
 import { getDb, settingGet } from './db'
 import { listRepoBranches, mainRepoOf } from './branches'
+import { worktreesDirFor } from './worktree-paths'
 import {
   listRegisteredWorktrees,
   performRemoval,
@@ -50,7 +51,11 @@ interface WorkRow {
 
 /** Where revva places new worktrees for a repo (same rule as the create path). */
 function revvaRootFor(repoDir: string): string {
-  return settingGet<string>('worktreeRoot') || join(repoDir, '..', `${basename(repoDir)}-worktrees`)
+  try {
+    return worktreesDirFor(repoDir)
+  } catch {
+    return ''
+  }
 }
 
 class WorktreeManager {
@@ -73,11 +78,12 @@ class WorktreeManager {
     const includeMain = options?.includeMainCheckouts ?? false
     const works = getDb().prepare('SELECT worktree_dir, repo_dir, branch, state, ticket_key FROM work').all() as WorkRow[]
     const byDir = new Map(works.map((w) => [w.worktree_dir, w]))
-    const rootSetting = settingGet<string>('worktreeRoot') || undefined
     const out: WorktreeInfo[] = []
     const seen = new Set<string>()
+    // Keyed by directory alone: a workspace path and a work row's repo_dir can both
+    // name the same folder, and keying on repoDir+directory listed it twice.
     const add = (info: WorktreeInfo): void => {
-      const key = `${info.repoDir}\u0000${info.directory}`
+      const key = info.directory
       if (seen.has(key)) return
       seen.add(key)
       out.push(info)
@@ -93,7 +99,7 @@ class WorktreeManager {
     }
 
     for (const repoDir of this.repoDirs()) {
-      const revvaRoot = rootSetting || join(repoDir, '..', `${basename(repoDir)}-worktrees`)
+      const revvaRoot = revvaRootFor(repoDir)
       // The main checkout is the shared git dir's owner, not necessarily the queried
       // path: a workspace can itself be a linked worktree, and then git lists the real
       // main checkout among its entries. Cleanup must never offer that one.
@@ -112,7 +118,7 @@ class WorktreeManager {
             detached: wt.detached,
             locked: wt.locked,
             prunable: wt.prunable,
-            inWorktreeRoot: wt.path.startsWith(revvaRoot),
+            inWorktreeRoot: revvaRoot !== '' && wt.path.startsWith(revvaRoot),
             revva: Boolean(work),
             ticketKey: work?.ticket_key,
             busy: work ? LIVE_STATES.has(work.state) : undefined,
@@ -140,11 +146,17 @@ class WorktreeManager {
             } catch {
               continue
             }
+            // Only a *linked* worktree is cleanup's business. A standalone clone has a
+            // `.git` of its own and is its own main checkout, so it must never be listed
+            // as a removable worktree of some unrelated repo (which is how the review
+            // clones used to appear).
+            const owner = await mainRepoOf(wt.directory).catch(() => undefined)
+            if (!owner || owner === realpathSync(wt.directory)) continue
             const work = byDir.get(wt.directory)
             add({
               repoDir,
               directory: wt.directory,
-              inWorktreeRoot: wt.directory.startsWith(revvaRoot),
+              inWorktreeRoot: revvaRoot !== '' && wt.directory.startsWith(revvaRoot),
               revva: Boolean(work),
               ticketKey: work?.ticket_key,
               busy: work ? LIVE_STATES.has(work.state) : undefined
@@ -155,33 +167,11 @@ class WorktreeManager {
         }
       }
     }
-    // Revva work rows whose folder is gone and no longer registered: the git and
-    // service listings cannot show them, but they still clutter the picture —
-    // surface them as stale entries. Exact registration is required for any
-    // action, so preflight/remove refuse these honestly (nothing to clear);
-    // they only disappear when the work row itself goes away.
-    for (const w of works) {
-      if (seen.has(`${w.repo_dir}\u0000${w.worktree_dir}`)) continue
-      const work = byDir.get(w.worktree_dir)
-      if (!work || LIVE_STATES.has(work.state)) continue
-      let gone = false
-      try {
-        await lstat(join(w.worktree_dir, '.git'))
-      } catch (err) {
-        gone = (err as NodeJS.ErrnoException)?.code === 'ENOENT' || (err as NodeJS.ErrnoException)?.code === 'ENOTDIR'
-      }
-      if (!gone) continue
-      add({
-        repoDir: w.repo_dir,
-        directory: w.worktree_dir,
-        branch: work.branch,
-        prunable: true,
-        inWorktreeRoot: w.worktree_dir.startsWith(revvaRootFor(w.repo_dir)),
-        revva: true,
-        ticketKey: work.ticket_key,
-        busy: false
-      })
-    }
+    // Revva work rows whose folder is gone are *not* worktrees: there is nothing on
+    // disk and nothing registered in git, so there is nothing to list, prune or
+    // remove. They used to be surfaced here as `prunable` entries, which is how the
+    // cleanup dialog came to report dozens of phantom worktrees that every action
+    // then refused.
     return out.sort((a, b) => a.directory.localeCompare(b.directory))
   }
 

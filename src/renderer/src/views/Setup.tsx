@@ -13,6 +13,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { RoleSelectors, DEFAULT, selOrUndefined } from './RoleSelectors'
 import { FeaturesDialogButton } from './FeaturesDialog'
+import { WorktreeRootField } from './WorktreeRootField'
 import { ChangelogDialogButton } from './ChangelogDialog'
 import {
   DEFAULT_START_PROMPT,
@@ -155,6 +156,9 @@ export function SetupView(): React.JSX.Element {
                   </Button>
                 </div>
               ))}
+            </div>
+            <div className="pt-2">
+              <WorktreeRootField />
             </div>
             <div className="flex gap-2">
               <Input

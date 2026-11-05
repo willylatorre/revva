@@ -7,6 +7,10 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
+- **One worktree layout, set in Setup** — every clone and worktree now lives under a single `worktreeRoot` you choose, laid out as `repos/<owner>/<name>` for review clones and `worktrees/<owner>/<name>/…` (or `worktrees/local/<repo>/…` for your own checkouts) for their worktrees. The setting is now required: revva used to fall back to three unrelated defaults depending on the code path — a `<repo>-worktrees` sibling folder for ticket work, `~/<home>-worktrees/gh-reviews/<owner>` for PR work, and whatever OpenCode picked for its own — which scattered one person's checkouts across three directory trees. Worktrees are never placed inside a checkout, where repo-wide tooling would walk into other branches' files.
+
+- **The worktree dialog no longer counts phantoms** — the list showed 39 entries when only five were real worktrees. Three causes are fixed: the same folder is no longer listed once per known repo path, standalone review clones are no longer offered as removable worktrees of an unrelated repo, and a folder missing its `.git` is no longer counted as a worktree.
+
 - **Choose a model when retrying or relaunching a review agent** — reviewer retries can use a different discovered model for that attempt only. Changing the fixer model starts a fresh fixer session while preserving the prior session and partial work; configured model defaults are unchanged.
 
 ## [1.11.0] - 2026-11-04

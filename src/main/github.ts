@@ -9,12 +9,13 @@
 import { execTool } from './toolchain'
 import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'node:fs'
-import { join, basename } from 'node:path'
-import { app, BrowserWindow, Notification } from 'electron'
+import { join } from 'node:path'
+import { BrowserWindow, Notification } from 'electron'
 import { openCodeService, describeError } from './opencode/service'
 import { chatManager } from './opencode/chats'
 import { getDb, roleConfigGet, settingGet, settingSet } from './db'
 import { workManager } from './pipeline/works'
+import { reviewClonesDir, reviewClonesPath, reviewRoot, worktreesDirFor } from './worktree-paths'
 import { renderPrompt, DEFAULT_PR_REVIEW_PROMPT } from '@shared/prompts'
 import { parsePrRef, repoFromGitRemote } from '@shared/pr-ref'
 import { ticketKeyFromText } from '@shared/ticket-key'
@@ -511,7 +512,7 @@ class GitHubManager {
   }
 
   /**
-   * Checkout of `owner/name` under the gh-reviews root, cloned on first use.
+   * Checkout of `owner/name` under the review-clone root, cloned on first use.
    * The clone is staged in a sibling folder and renamed into place only after it
    * succeeds, so a killed or failed clone never leaves a half-repo that would
    * later read as a valid checkout. A folder left by an earlier failed clone is
@@ -554,21 +555,21 @@ class GitHubManager {
     const [owner, name] = pr.repo.split('/')
     if (!owner || !name || !pr.baseRefName || !pr.headRefName) throw new Error('Could not determine the PR repository and branches.')
 
-    const root = settingGet<string>('worktreeRoot') || join(app.getPath('home'), `${basename(app.getPath('home'))}-worktrees`)
-    const reposDir = join(root, 'gh-reviews', owner)
-    mkdirSync(reposDir, { recursive: true })
+    const reposDir = reviewClonesDir(owner)
     const repoDir = await this.ensureReviewClone(owner, name, reposDir)
     const remote = await git(repoDir, ['remote', 'get-url', 'origin'])
     if (!remote.ok || repoFromGitRemote(remote.out)?.toLowerCase() !== pr.repo.toLowerCase()) {
       throw new Error(`The existing checkout at ${repoDir} does not have ${pr.repo} as its origin.`)
     }
+    const worktreesDir = worktreesDirFor(repoDir)
+    mkdirSync(worktreesDir, { recursive: true })
 
     const id = randomUUID()
     const ref = `refs/revva/conflicts/${id}`
     const fetch = await git(repoDir, ['fetch', '--no-tags', 'origin', `pull/${pr.number}/head:${ref}`], { timeoutMs: FETCH_TIMEOUT_MS })
     if (!fetch.ok) throw new Error(`Could not fetch PR head: ${(fetch.err || fetch.out).slice(0, 300)}`)
     const branch = `revva/conflicts-pr${pr.number}-${id}`
-    const worktreeDir = join(reposDir, `${name}-conflicts-pr${pr.number}-${id}`)
+    const worktreeDir = join(worktreesDir, `${name}-conflicts-pr${pr.number}-${id}`)
     const add = await git(repoDir, ['worktree', 'add', '-b', branch, worktreeDir, ref])
     if (!add.ok) throw new Error(`Could not create conflict worktree: ${(add.err || add.out).slice(0, 300)}`)
 
@@ -614,16 +615,16 @@ class GitHubManager {
       if (row && existsSync(row.worktree_dir)) directory = row.worktree_dir
     }
     if (!directory) {
-      const root = settingGet<string>('worktreeRoot') || join(app.getPath('home'), `${basename(app.getPath('home'))}-worktrees`)
-      const reposDir = join(root, 'gh-reviews', owner)
-      mkdirSync(reposDir, { recursive: true })
+      const reposDir = reviewClonesDir(owner)
       const repoDir = await this.ensureReviewClone(owner, name, reposDir)
+      const worktreesDir = worktreesDirFor(repoDir)
+      mkdirSync(worktreesDir, { recursive: true })
       const id = randomUUID()
       const ref = `refs/revva/comments/${id}`
       const fetch = await git(repoDir, ['fetch', '--no-tags', 'origin', `pull/${pr.number}/head:${ref}`], { timeoutMs: FETCH_TIMEOUT_MS })
       if (!fetch.ok) throw new Error(`Could not fetch PR head: ${(fetch.err || fetch.out).slice(0, 300)}`)
       const branch = `revva/comments-pr${pr.number}-${id}`
-      const worktreeDir = join(reposDir, `${name}-comments-pr${pr.number}-${id}`)
+      const worktreeDir = join(worktreesDir, `${name}-comments-pr${pr.number}-${id}`)
       const add = await git(repoDir, ['worktree', 'add', '-b', branch, worktreeDir, ref])
       if (!add.ok) throw new Error(`Could not create comments worktree: ${(add.err || add.out).slice(0, 300)}`)
       directory = worktreeDir
@@ -679,7 +680,7 @@ class GitHubManager {
 
   /**
    * Rebase the PR's head branch onto its base and force-with-lease push.
-   * Runs in a throwaway worktree under the gh-reviews root — the user's own
+   * Runs in a throwaway worktree under the review-clone root — the user's own
    * working trees are never touched. Fails honestly when the head lives on a
    * fork we cannot push to, or when the rebase conflicts (leaving the
    * throwaway untouched state is irrelevant; the branch was never pushed).
@@ -688,16 +689,16 @@ class GitHubManager {
     const pr = await this.detail(prUrl)
     if (pr.merged || pr.state === 'merged') throw new Error('This PR is already merged.')
     if (pr.state === 'closed') throw new Error('This PR is closed.')
-    const root = settingGet<string>('worktreeRoot') || join(app.getPath('home'), `${basename(app.getPath('home'))}-worktrees`)
-    const reposDir = join(root, 'gh-reviews', pr.repo.split('/')[0]!)
-    mkdirSync(reposDir, { recursive: true })
+    const reposDir = reviewClonesDir(pr.repo.split('/')[0]!)
     const repoDir = await this.ensureReviewClone(pr.repo.split('/')[0]!, pr.repo.split('/')[1]!, reposDir)
+    const worktreesDir = worktreesDirFor(repoDir)
+    mkdirSync(worktreesDir, { recursive: true })
     const fetchHead = await git(repoDir, ['fetch', 'origin', `pull/${pr.number}/head:revva/rebase-${pr.number}`], { timeoutMs: FETCH_TIMEOUT_MS })
     if (!fetchHead.ok) throw new Error(`git fetch of PR head failed: ${fetchHead.err.slice(0, 300)}`)
     const fetchBase = await git(repoDir, ['fetch', 'origin', pr.baseRefName], { timeoutMs: FETCH_TIMEOUT_MS })
     if (!fetchBase.ok) throw new Error(`git fetch of ${pr.baseRefName} failed: ${fetchBase.err.slice(0, 300)}`)
 
-    const worktreeDir = join(reposDir, `${pr.repo.split('/')[1]}-rebase-pr${pr.number}`)
+    const worktreeDir = join(worktreesDir, `${pr.repo.split('/')[1]}-rebase-pr${pr.number}`)
     await git(repoDir, ['worktree', 'prune'])
     await git(repoDir, ['worktree', 'remove', '--force', worktreeDir])
     const add = await git(repoDir, ['worktree', 'add', worktreeDir, `revva/rebase-${pr.number}`])
@@ -749,15 +750,14 @@ class GitHubManager {
   /**
    * Find the `gh stack` stack containing this PR's branch, if a local checkout
    * tracks one. Stacks are local state, so this probes the candidate checkouts
-   * (the conversation's worktree, linked works, the gh-reviews clone) with
+   * (the conversation's worktree, linked works, the review clone) with
    * `gh stack view --json` and matches the PR number. Null when the PR is not
    * stacked — or when the extension is not installed at all.
    */
   async stackForPr(prUrl: string, directory?: string): Promise<PrStack | null> {
     const pr = await this.detail(prUrl)
-    const root = settingGet<string>('worktreeRoot') || join(app.getPath('home'), `${basename(app.getPath('home'))}-worktrees`)
     const [owner, name] = pr.repo.split('/')
-    const reposDir = join(root, 'gh-reviews', owner ?? '')
+    const reposDir = owner ? reviewClonesPath(owner) : reviewRoot()
     const candidates: string[] = []
     if (directory) candidates.push(directory)
     for (const row of getDb().prepare('SELECT repo_dir, worktree_dir FROM work WHERE pr_url = ? OR repo_dir IN (SELECT repo_dir FROM work WHERE pr_url = ?)').all(pr.url, pr.url) as Array<{ repo_dir: string; worktree_dir: string }>) {
@@ -765,8 +765,11 @@ class GitHubManager {
     }
     if (owner && name && existsSync(reposDir)) {
       candidates.push(join(reposDir, name))
-      for (const entry of readdirSync(reposDir)) {
-        if (entry.startsWith(`${name}-`) || entry === name) candidates.push(join(reposDir, entry))
+      const tree = worktreesDirFor(join(reposDir, name))
+      if (existsSync(tree)) {
+        for (const entry of readdirSync(tree)) {
+          if (entry.startsWith(`${name}-`) || entry === name) candidates.push(join(tree, entry))
+        }
       }
     }
     const seen = new Set<string>()
@@ -818,17 +821,17 @@ class GitHubManager {
    * "Chat with this PR" never clones — it just talks about the PR via gh.
    */
   private async ensureReviewWorktree(pr: PrDetail, onProgress?: (stage: string) => void): Promise<string> {
-    const root = settingGet<string>('worktreeRoot') || join(app.getPath('home'), `${basename(app.getPath('home'))}-worktrees`)
-    const reposDir = join(root, 'gh-reviews', pr.repo.split('/')[0]!)
-    mkdirSync(reposDir, { recursive: true })
+    const reposDir = reviewClonesDir(pr.repo.split('/')[0]!)
     onProgress?.('Checking the repository checkout…')
     const repoDir = await this.ensureReviewClone(pr.repo.split('/')[0]!, pr.repo.split('/')[1]!, reposDir, onProgress)
+    const worktreesDir = worktreesDirFor(repoDir)
+    mkdirSync(worktreesDir, { recursive: true })
 
     const branch = `revva/pr-${pr.number}`
     await git(repoDir, ['worktree', 'prune'])
     const existing = await git(repoDir, ['worktree', 'list', '--porcelain'])
-    const alreadyAdded = existing.ok && existing.out.includes(join(reposDir, `${pr.repo.split('/')[1]}-pr${pr.number}`))
-    const worktreeDir = join(reposDir, `${pr.repo.split('/')[1]}-pr${pr.number}`)
+    const alreadyAdded = existing.ok && existing.out.includes(join(worktreesDir, `${pr.repo.split('/')[1]}-pr${pr.number}`))
+    const worktreeDir = join(worktreesDir, `${pr.repo.split('/')[1]}-pr${pr.number}`)
     if (!alreadyAdded) {
       onProgress?.('Fetching the PR branch…')
       const fetch = await git(repoDir, ['fetch', 'origin', `pull/${pr.number}/head:${branch}`], { timeoutMs: FETCH_TIMEOUT_MS })
@@ -911,9 +914,7 @@ class GitHubManager {
     }
     const [owner] = ref.repo.split('/')
     if (!owner) throw new Error('Could not determine the PR repository owner.')
-    const root = settingGet<string>('worktreeRoot') || join(app.getPath('home'), `${basename(app.getPath('home'))}-worktrees`)
-    const reposDir = join(root, 'gh-reviews', owner)
-    mkdirSync(reposDir, { recursive: true })
+    const reposDir = reviewClonesDir(owner)
     const sel = roleConfigGet('prReview')
     const chat = await chatManager.create({
       directory: reposDir,
