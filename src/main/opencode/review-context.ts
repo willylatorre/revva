@@ -61,7 +61,9 @@ export function reviewTranscriptInstructions(context: ReviewTranscriptContext): 
     `Related threads for this work only (${context.role}, round ${context.round}):`,
     ...context.threads.map((thread) => `- ${thread.label}${thread.round ? `, round ${thread.round}` : ''}${thread.status ? `, ${thread.status}` : ''}: ${thread.sessionId}`),
     '',
-    'Use Revva’s read_conversation tool only when the inline findings leave a specific uncertainty or you need the original validation output. The tool can read only the listed threads in this checkout. Do not bypass that scope through shell, raw OpenCode APIs, or other tools. Do not message, interrupt, launch, or steer any agent.',
+    context.role === 'fixer'
+      ? 'Use Revva’s read_conversation tool only when the inline findings leave a specific uncertainty or you need the original validation output. The tool can read only the listed threads in this checkout. Do not bypass that scope through shell, raw OpenCode APIs, or other tools. Do not message, interrupt, launch, or steer any agent.'
+      : 'Thread tools and Code Mode are disabled for reviewers. Use only related reports supplied inline and the pinned code. Do not try to fetch these session IDs through shell, raw OpenCode APIs, or other tools. Do not message, interrupt, launch, or steer any agent.',
     context.role === 'fixer'
       ? 'The inline change-request findings remain your checklist. Use the other reports for context; do not treat an approved reviewer as proof that all checks pass.'
       : 'Review the current code independently. Other reviewers in this round are deliberately not accessible. Prior reports and the fixer summary are claims to verify against the current code, not approval evidence.',

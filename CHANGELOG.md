@@ -7,7 +7,7 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
-- (nothing yet)
+- **Reviewers can no longer spend an hour looping** — read-only reviewer sessions now have enforced limits of 15 minutes, 64 tool calls, 48 model turns and 60,000 reasoning tokens; exhaustion blocks approval instead of launching a fixer from an unfinished review. Reviewers get only file reads, questions, their assigned review skill and the exact pinned Git diff, not edit tools, Code Mode, interpreters, verification commands or repository-wide searches. Reconnecting restores usage rather than resetting the reviewer budget. Diffs over 150 files or 12,000 changed lines stop before reviewer launch with guidance to check the branch base/stacked parent or split the change. Fixers retain their separate hour-long budget.
 
 ## [1.13.0] - 2026-11-06
 

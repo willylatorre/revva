@@ -6,7 +6,7 @@
  * - Reviewers never edit: prompts forbid writes/commits/subagents. Any incomplete or
  *   errored reviewer blocks approval — a missing skill is 'skipped', never 'approved'.
  * - Every role resolves agent/model as per-run override → role default → service default.
- * - Verdict protocol: reviewer's LAST line must be `VERDICT: APPROVED` or `VERDICT: CHANGES`.
+ * - Verdict protocol: APPROVED / CHANGES require a complete report; INCOMPLETE blocks the gate.
  * - Fixer is a single session with the consolidated findings; rounds are bounded (default 3).
  */
 import { execTool } from './toolchain'
@@ -38,16 +38,12 @@ import {
   type ReviewStatus
 } from '@shared/types'
 import { COMMIT_IDENTITY_GUARD } from '@shared/prompts'
+import { REVIEW_LIMITS, ReviewerBudget, reviewerPermissions } from './review-harness'
 
 const exec = execTool
 
-/**
- * Watchdog: a reviewer/fixer session stuck this long is errored out. The rigor
- * reviewer on a self-hosted model without prompt cache routinely needs 15–20 min
- * on a large diff, so this sits well above that band; the "End early" control
- * covers runs the human doesn't want to wait for.
- */
-const SESSION_TIMEOUT_MS = 60 * 60_000
+/** Fixers write and verify; their budget is separate from read-only reviewers. */
+const FIXER_TIMEOUT_MS = 60 * 60_000
 const LEGACY_RESTART_ERROR = 'revva restarted while this review was running'
 
 interface ReviewDbRow {
@@ -95,16 +91,18 @@ function resolveSel(workId: string, role: PipelineRole, perRun?: Record<string, 
 }
 
 /**
- * Verdict parsing — conservative: only an explicit APPROVED token approves.
- * Missing/garbled verdicts count as CHANGES so nothing slips through silently.
+ * Only complete, explicit verdicts decide the review. An unfinished report is
+ * an error, not a request to send speculative/partial findings to a fixer.
  */
-export function parseVerdict(text: string): 'approved' | 'changes' {
+export function parseVerdict(text: string): 'approved' | 'changes' | 'error' {
   const lines = text
     .split('\n')
     .map((l) => l.trim().replace(/[*`>_#]/g, '').trim())
     .filter(Boolean)
   const last = lines[lines.length - 1] ?? ''
-  return /^VERDICT:\s*APPROVED\b/i.test(last) ? 'approved' : 'changes'
+  if (/^VERDICT:\s*APPROVED$/i.test(last)) return 'approved'
+  if (/^VERDICT:\s*CHANGES$/i.test(last)) return 'changes'
+  return 'error'
 }
 
 interface TrackedSession {
@@ -116,12 +114,16 @@ interface TrackedSession {
   remainingMs: number
   deadline: number
   tracker: ActivityTracker
+  budget?: ReviewerBudget
+  /** Budget termination owns settlement even if interruption/completion races it. */
+  budgetError?: string
   /** Set while End early interrupts the session; the partial report decides, not the interrupt event. */
   endedEarly?: boolean
 }
 
 interface ReviewScope {
   base: string
+  head: string
   uiFiles: string[]
 }
 
@@ -217,7 +219,9 @@ class ReviewManager {
         }
         if (!this.sessions.has(row.sessionId)) {
           db.prepare("UPDATE review SET status = 'running', error = NULL, updated_at = ? WHERE id = ?").run(Date.now(), row.id)
-          this.trackSession(row.sessionId, { workId: work.id, round, role: row.role as ReviewRole | 'fixer', reviewId: row.id, remainingMs: SESSION_TIMEOUT_MS, deadline: 0, tracker: new ActivityTracker() })
+          const limit = row.role === 'fixer' ? FIXER_TIMEOUT_MS : REVIEW_LIMITS.milliseconds
+          // Reopening Revva must not buy a looping reviewer another full budget.
+          this.trackSession(row.sessionId, { workId: work.id, round, role: row.role as ReviewRole | 'fixer', reviewId: row.id, remainingMs: Math.max(1, limit - (Date.now() - row.createdAt)), deadline: 0, tracker: new ActivityTracker() })
           this.activity.set(row.id, { activity: 'Reconnecting to OpenCode…', lastActivityAt: Date.now() })
         }
         restored.push(row)
@@ -229,7 +233,10 @@ class ReviewManager {
     }
     // Register first, then probe: events after this point are observed even if
     // execution ends while we fetch this second authoritative snapshot.
-    await Promise.allSettled(restored.map((row) => coordinator.prepareReview(row.sessionId!)))
+    await Promise.allSettled(restored.map(async (row) => {
+      if (row.role !== 'fixer') await this.restoreReviewerHarness(row)
+      if (this.sessions.has(row.sessionId!)) await coordinator.prepareReview(row.sessionId!)
+    }))
     const active = await openCodeService.api.session.active()
     for (const row of restored) {
       const sessionId = row.sessionId!
@@ -478,11 +485,11 @@ class ReviewManager {
         agent: sel.agentID ?? null,
         model: sel.model ? { providerID: sel.model.providerID, id: sel.model.id, ...(sel.model.variant ? { variant: sel.model.variant } : {}) } : null,
         location: { directory: work.worktree_dir },
-        ...(guard.length ? { permissions: guard } : {}),
+        permissions: [...reviewerPermissions(scope.base, scope.head, role), ...guard],
         metadata: { revva: { kind: 'review', workId: work.id, round, role } }
       })
       this.update(reviewId, 'running', undefined, undefined, session.id)
-      this.trackSession(session.id, { workId: work.id, round, role, reviewId, remainingMs: SESSION_TIMEOUT_MS, deadline: 0, tracker: new ActivityTracker() })
+      this.trackSession(session.id, { workId: work.id, round, role, reviewId, remainingMs: REVIEW_LIMITS.milliseconds, deadline: 0, tracker: new ActivityTracker() })
       await coordinator.prepareReview(session.id)
       if (this.sessions.get(session.id)?.reviewId !== reviewId) return
       await api.session.prompt({ sessionID: session.id, text: reviewerPrompt(role, work, round, skills, scope) })
@@ -574,9 +581,8 @@ class ReviewManager {
 
   /**
    * End one running reviewer early on purpose: interrupt it and judge its round
-   * from the report it streamed so far. Partial findings without a final
-   * `VERDICT:` line parse as CHANGES (fail closed), so this can never sneak an
-   * approval through. Other reviewers of the round keep their results.
+   * from the report it streamed so far. Partial findings without a completed
+   * verdict block the gate, not dispatch a fixer. Other reviewers keep their results.
    */
   async finishReviewEarly(workId: string, reviewId: number): Promise<void> {
     const rows = this.reviewsFor(workId)
@@ -604,10 +610,10 @@ class ReviewManager {
         // A missing transcript only means the round judges an empty report.
       }
       // A reviewer that wrote its verdict line before stopping gets that verdict;
-      // a partial report without one parses as CHANGES, never as approval.
+      // a partial report without one blocks approval and automatic fixing.
       const status = parseVerdict(partial)
-      await this.settle(sessionId, status, partial, status === 'changes' && !partial.trim()
-        ? 'Ended early by you before any report text streamed.'
+      await this.settle(sessionId, status, partial, status === 'error'
+        ? 'Ended early without a complete verdict. Review incomplete; approval and automatic fixing blocked.'
         : 'Ended early by you; the report so far decided this round.')
     } finally {
       // If settle bailed (already settling), let fan-in judge the round anyway.
@@ -616,10 +622,56 @@ class ReviewManager {
   }
 
   private trackSession(sessionId: string, tracked: TrackedSession): void {
+    if (tracked.role !== 'fixer') tracked.budget = new ReviewerBudget()
     this.sessions.set(sessionId, tracked)
     sessionIndex.register(sessionId, 'review')
     this.activity.set(tracked.reviewId, { activity: 'Preparing session…', lastActivityAt: Date.now() })
     this.syncWatchdogs()
+  }
+
+  /** The SSE bus is live-only; restore missed calls/turns before resuming monitoring. */
+  private async restoreReviewerHarness(row: ReviewRow): Promise<void> {
+    const sessionId = row.sessionId!
+    const tracked = this.sessions.get(sessionId)
+    if (!tracked?.budget || tracked.budgetError) return
+    try {
+      const scope = getDb().prepare('SELECT review_base, review_head, worktree_dir FROM work WHERE id = ?').get(row.workId) as {
+        review_base: string | null; review_head: string | null; worktree_dir: string
+      }
+      if (!scope.review_base || !scope.review_head) throw new Error('The pinned review commits are missing. Re-run review.')
+      const signal = AbortSignal.timeout(20_000)
+      const [session, messages, guard] = await Promise.all([
+        openCodeService.api.session.get({ sessionID: sessionId }, { signal }),
+        openCodeService.api.message.list({ sessionID: sessionId, type: 'assistant', order: 'asc', limit: REVIEW_LIMITS.steps + 1 }, { signal }),
+        skillGuardRules(scope.worktree_dir)
+      ])
+      if (this.sessions.get(sessionId) !== tracked || tracked.budgetError) return
+      // Replace our allowlist rather than accumulating duplicate rules on reconnect.
+      const permissions = reviewerPermissions(scope.review_base, scope.review_head, row.role)
+      const actions = new Set(permissions.map((rule) => rule.action))
+      await openCodeService.api.session.update({ sessionID: sessionId, permissions: [
+        ...(session.permissions ?? []).filter((rule) => !actions.has(rule.action)), ...permissions, ...guard
+      ] }, { signal })
+      tracked.budget.restore(messages.data.filter((message) => message.type === 'assistant'), session.tokens.reasoning)
+      const exhausted = tracked.budget.exhausted()
+      if (exhausted) this.stopForBudget(sessionId, exhausted)
+    } catch (err) {
+      // A failure to reinstall restrictions must not silently restore an unrestricted reviewer.
+      this.stopForBudget(sessionId, `harness recovery failed: ${describeError(err)}`)
+    }
+  }
+
+  private stopForBudget(sessionId: string, limit: string): void {
+    const tracked = this.sessions.get(sessionId)
+    if (!tracked || tracked.budgetError || this.settling.has(sessionId)) return
+    tracked.budgetError = tracked.role === 'fixer' ? 'Fixer timed out.'
+      : `Review incomplete: ${limit} limit reached. Approval blocked; inspect the scope or retry with another model. Transcript kept.`
+    this.audit(tracked.workId, tracked.round, 'review-budget-exhausted', `${tracked.role}: ${limit}`)
+    // Claim error settlement synchronously before an execution event can approve it.
+    void this.settle(sessionId, 'error', undefined, tracked.budgetError)
+    void openCodeService.api.session.interrupt({ sessionID: sessionId }).catch((err) => {
+      console.warn('[review] budget interrupt failed:', describeError(err))
+    })
   }
 
   /** Human response time does not count against the execution watchdog. */
@@ -638,9 +690,7 @@ class ReviewManager {
         tracked.timer = setTimeout(() => {
           tracked.timer = undefined
           if (this.sessions.get(sessionId) !== tracked) return
-          const message = tracked.role === 'fixer' ? 'fixer timed out' : `reviewer timed out after ${SESSION_TIMEOUT_MS / 60000} min. Inspect the reviewer transcript for a stalled tool, then retry.`
-          void this.settle(sessionId, 'error', undefined, message)
-          void openCodeService.api.session.interrupt({ sessionID: sessionId }).catch(() => undefined)
+          this.stopForBudget(sessionId, `${(tracked.role === 'fixer' ? FIXER_TIMEOUT_MS : REVIEW_LIMITS.milliseconds) / 60000} minutes`)
         }, tracked.remainingMs)
       }
     }
@@ -654,6 +704,11 @@ class ReviewManager {
     if (typeof sessionId !== 'string') return
     const tracked = this.sessions.get(sessionId)
     if (!tracked) return
+
+    tracked.budget?.observe(e)
+    const exhausted = tracked.budget?.exhausted()
+    if (exhausted) this.stopForBudget(sessionId, exhausted)
+    if (tracked.budgetError) return
 
     const activity = tracked.tracker.describe(e)
     if (activity) {
@@ -698,6 +753,7 @@ class ReviewManager {
         const row = getDb().prepare('SELECT created_at FROM review WHERE id = ?').get(t.reviewId) as { created_at: number } | undefined
         text += await latestAssistantText(sessionId, AbortSignal.timeout(30_000), row?.created_at ?? Infinity)
         status = t.role === 'fixer' ? 'approved' : parseVerdict(text)
+        if (status === 'error') error = 'Review incomplete or missing a valid final verdict. Approval and automatic fixing blocked; inspect the report and retry.'
       } catch (err) {
         status = 'error'
         error = describeError(err)
@@ -858,7 +914,7 @@ class ReviewManager {
           metadata: { revva: { kind: 'review', workId, round, role: 'fixer' } }
         }))
       this.update(reviewId, 'running', undefined, undefined, session.id)
-      this.trackSession(session.id, { workId, round, role: 'fixer', reviewId, remainingMs: SESSION_TIMEOUT_MS, deadline: 0, tracker: new ActivityTracker() })
+      this.trackSession(session.id, { workId, round, role: 'fixer', reviewId, remainingMs: FIXER_TIMEOUT_MS, deadline: 0, tracker: new ActivityTracker() })
       await coordinator.prepareReview(session.id)
       if (this.sessions.get(session.id)?.reviewId !== reviewId) return
       this.starting.delete(workId)
@@ -933,15 +989,27 @@ class ReviewManager {
       if (!base) throw new Error('Empty merge base.')
       return await this.scopeFromBase(dir, base)
     } catch (err) {
-      throw new Error(`Could not resolve review base ${ref}: ${describeError(err)}`)
+      throw new Error(`Could not prepare review scope from ${ref}: ${describeError(err)}`)
     }
   }
 
   private async scopeFromBase(dir: string, base: string): Promise<ReviewScope> {
     if (!/^[0-9a-f]{40,64}$/i.test(base)) throw new Error('Invalid recorded review base.')
     await exec('git', ['-C', dir, 'merge-base', '--is-ancestor', base, 'HEAD'])
-    const files = (await exec('git', ['-C', dir, 'diff', '--name-only', '-z', base, 'HEAD', '--'])).stdout.split('\0').filter(Boolean)
-    return { base, uiFiles: files.filter((file) => /\.(tsx|jsx|vue|svelte|css|scss|less|html)$/i.test(file)) }
+    const head = (await exec('git', ['-C', dir, 'rev-parse', 'HEAD'])).stdout.trim()
+    const [names, numstat] = await Promise.all([
+      exec('git', ['-C', dir, 'diff', '--name-only', '-z', base, head, '--']),
+      exec('git', ['-C', dir, 'diff', '--numstat', base, head, '--'])
+    ])
+    const files = names.stdout.split('\0').filter(Boolean)
+    const changedLines = numstat.stdout.split('\n').reduce((total, line) => {
+      const [added, removed] = line.split('\t')
+      return total + (Number(added) || 0) + (Number(removed) || 0)
+    }, 0)
+    if (files.length > REVIEW_LIMITS.files || changedLines > REVIEW_LIMITS.changedLines) {
+      throw new Error(`Review scope too large: ${files.length} files, ${changedLines} changed lines from ${base.slice(0, 12)}. Limit: ${REVIEW_LIMITS.files} files / ${REVIEW_LIMITS.changedLines} changed lines. Check the branch base or stacked parent for already-merged work, or split the change before reviewing. No reviewers were started.`)
+    }
+    return { base, head, uiFiles: files.filter((file) => /\.(tsx|jsx|vue|svelte|css|scss|less|html)$/i.test(file)) }
   }
 
   private update(
@@ -985,18 +1053,22 @@ function reviewerPrompt(
 ): string {
   const common = [
     `You are Revva's ${roleLabels[role]} reviewer for ${work.ticket_key || `conversation on ${work.branch}`}, round ${round}.`,
-    `Repository worktree: ${work.worktree_dir} (branch ${work.branch}). Review ONLY the changes from base commit ${scope.base} to HEAD (git diff ${scope.base} HEAD).`,
+    `Repository worktree: ${work.worktree_dir} (branch ${work.branch}). Review ONLY the pinned changes from base commit ${scope.base} to commit ${scope.head} (git diff ${scope.base} ${scope.head}).`,
     '',
     'STRICT READ-ONLY: do not edit or create files, do not commit, do not push, do not start subagents or other agents.',
     'Review the current code independently. Do not read same-round peer reviews or message/steer other agents. If Revva supplies related-thread context, use only those scoped references to clarify implementation validation or verify your previous findings and the fixer’s claims.',
     '',
-    `Run \`git diff --stat ${scope.base} HEAD\` FIRST. If it is empty (base equals HEAD), there is nothing to review: output one line saying so and your verdict line, then stop — never hunt for the diff through reflogs, stashes, fsck, other branches, or the filesystem.`,
+    `Run \`git diff --stat ${scope.base} ${scope.head}\` FIRST. If it is empty, there is nothing to review: output one line saying so and your verdict line, then stop — never hunt for the diff through reflogs, stashes, fsck, other branches, or the filesystem.`,
     'Stay on the diff: read the changed files and their immediate context. Do not audit or propose changes to code the diff does not touch, and do not run repo-wide discovery sweeps.',
-    'Do not load repo-wide workflow skills or their validation tooling for a diff review — judge from the diff and surrounding code with this prompt alone.'
+    'Do not load repo-wide workflow skills or their validation tooling for a diff review — judge from the diff and surrounding code with this prompt alone.',
+    `ENFORCED BUDGET: at most ${REVIEW_LIMITS.milliseconds / 60000} minutes, ${REVIEW_LIMITS.tools} tool calls, ${REVIEW_LIMITS.steps} model turns and ${REVIEW_LIMITS.reasoningTokens} reasoning tokens. These are ceilings, not targets. Reserve capacity for your final report; reaching a limit interrupts the session and blocks approval.`,
+    `Tools are restricted to read, question, your assigned review skill, and these Git inspections: git diff --stat ${scope.base} ${scope.head}; git diff ${scope.base} ${scope.head}; git diff ${scope.base} ${scope.head} -- <paths>. Other shell commands, Code Mode, grep/glob discovery, verification, edits, external reads and delegation are denied. Use read with offsets for definitions and context, and any related-thread context Revva supplies inline. Do not retry a denied tool.`,
+    'Read each relevant area once, batch independent reads, and pursue only concrete candidates. After disproving a concern, do not reconsider it without new evidence. Stop exploring once you can report; do not repeatedly enumerate speculative issues or re-summarize privately.',
+    'If you cannot complete the required review within the budget, report what remains unreviewed and end with VERDICT: INCOMPLETE. Never approve an incomplete review.'
   ]
   const roleBody: Record<ReviewRole, string> = {
     sol: `${skills.has('sol-loop') ? 'Apply the sol-loop review protocol (use the sol-loop skill).' : 'Apply an adversarial senior-engineer review protocol.'}\nFor each finding give: severity (blocker / major / minor), file:line, why it matters, and a concrete fix. Judge correctness, edge cases, and fit with the ticket's intent.\nVerification economics: tests this diff adds must protect behavior this diff changed. Flag a new test as major when it re-asserts unchanged source code, duplicates stronger coverage, or exists for a repo whose policy forbids new automated tests — a test added here without a clear risk it retires is wasted maintenance cost; recommend stripping it.`,
-    rigor: `You are the independent second reviewer, deliberately on a different model than the primary reviewer; review so the two reports cross-check each other. Apply an adversarial senior-engineer protocol to this diff: correctness, edge cases, error handling, concurrency/state transitions, security, data loss, performance, and whether the change matches the ticket's intent. For each finding give: severity (blocker / major / minor), file:line, why it matters, and a concrete fix.\nWork only from the diff and the files it touches: read changed files plus the definitions they call, at most two hops out. Never run tests, linters, formatters, builds, or any other verification command — reason about the code instead of executing it. Never run repo-wide grep/rg/find sweeps; a targeted grep limited to a named file or directory you need for one specific call site is fine.\nTests and verification, judged only on this diff: first state whether the diff adds or changes any tests. If it does, judge each new test from reading it — flag as major any test that re-asserts unchanged source code, duplicates stronger coverage, tests implementation instead of observable behavior, or cannot fail; recommend stripping it. If it does not, check only for verification the repository's own policy explicitly requires. Follow the repository's testing policy, including explicit prohibitions on new unit/E2E tests or testing infrastructure. Do not judge pre-existing tests this diff does not touch.`,
+    rigor: `You are the independent second reviewer, deliberately on a different model than the primary reviewer; review so the two reports cross-check each other. Apply an adversarial senior-engineer protocol to this diff: correctness, edge cases, error handling, concurrency/state transitions, security, data loss, performance, and whether the change matches the ticket's intent. For each finding give: severity (blocker / major / minor), file:line, why it matters, and a concrete fix.\nWork only from the diff and the files it touches: read changed files plus the definitions they call, at most two hops out. Never run tests, linters, formatters, builds, or any other verification command — reason about the code instead of executing it. Use file reads and the pinned diff, not grep/rg/find sweeps.\nTests and verification, judged only on this diff: first state whether the diff adds or changes any tests. If it does, judge each new test from reading it — flag as major any test that re-asserts unchanged source code, duplicates stronger coverage, tests implementation instead of observable behavior, or cannot fail; recommend stripping it. If it does not, check only for verification the repository's own policy explicitly requires. Follow the repository's testing policy, including explicit prohibitions on new unit/E2E tests or testing infrastructure. Do not judge pre-existing tests this diff does not touch.`,
     impeccable: `Apply the impeccable skill to the UI changes on this branch: hierarchy, spacing, typography, states, responsiveness, and copy. Flag anything that would embarrass the author in a design review. Changed UI files: ${JSON.stringify(scope.uiFiles)}. Use these paths to select the relevant app(s) and target Impeccable context; if the correct scope remains ambiguous, ask the user.`
   }
   const verdict = `blockers or majors ⇒ CHANGES; minors-only or clean ⇒ APPROVED.`
@@ -1008,6 +1080,8 @@ function reviewerPrompt(
     'VERDICT: APPROVED',
     'or',
     'VERDICT: CHANGES',
+    'or, if required review remains unfinished,',
+    'VERDICT: INCOMPLETE',
     `(${verdict})`
   ].join('\n')
 }
