@@ -7,6 +7,10 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
+- (nothing yet)
+
+## [1.12.0] - 2026-11-06
+
 - **The new-Jira-comments banner can be dismissed, answered, or opened** — it used to have exactly one escape: run a rework agent over the branch. A comment is often just an FYI, a question already answered elsewhere, or something you would rather answer on the ticket yourself, so the banner now offers **Dismiss** (mark these comments handled, touching nothing), **Reply** (post a plain Jira comment through the same `*revva*:` path the watcher skips, no commit, no push, no worktree), and **Open** (jump to the ticket on Jira). “Tackle comments” is still there for feedback that really needs code.
 
 - **“Remove ticket link” no longer answers “Chat not found”** — a ticket row can outlive the conversation behind it (the OpenCode session was deleted by another client, or its storage was purged), and detaching then failed on the missing chat index row, leaving the ghost row permanently stuck in the sidebar. Detaching now checks the pipeline row too: it clears the ticket property, keeps the row when a PR link still makes it real work, retires it when nothing is left, and never invents a session. Opening a ghost row's “Remove ticket link” no longer switches to a conversation that cannot load.
