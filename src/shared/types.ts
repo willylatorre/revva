@@ -502,6 +502,30 @@ export const jiraStatusSchema = z.object({
 })
 export type JiraStatus = z.infer<typeof jiraStatusSchema>
 
+/* ---------- Update check (read-only) ---------- */
+
+/**
+ * The answer to "is there a newer Revva?". Nothing here downloads or installs:
+ * mac builds are ad-hoc signed, and macOS refuses in-place updates for those, so
+ * the honest surface is a version comparison plus a link to the release.
+ */
+export const updateCheckSchema = z.object({
+  /** The version running right now. */
+  current: z.string(),
+  /** The newest published release, when the check succeeded. */
+  latest: z.string().optional(),
+  /** Newer than `current`; the only case that earns a badge. */
+  available: z.boolean(),
+  /** Installer for this platform, or the release page as a fallback. */
+  downloadUrl: z.string().optional(),
+  /** Release notes for the newer version. */
+  notesUrl: z.string().optional(),
+  /** Why the check could not answer, when it could not. */
+  error: z.string().optional(),
+  checkedAt: z.number()
+})
+export type UpdateCheck = z.infer<typeof updateCheckSchema>
+
 /** Manual-only "Ready to Test" move. Either the ticket moved, or Revva stopped because a
  *  linked PR is not merged yet (with that PR's URL so the UI can ask for confirmation). */
 export type ReadyToTestResult = { moved: true; status: string } | { moved: false; unmergedPrUrl: string }
@@ -1057,6 +1081,8 @@ export interface RevvaApi {
   app: {
     /** App version + bundled CHANGELOG.md text; dev = unpackaged build, startedAt = when this main process spun up. */
     meta(): Promise<{ version: string; changelog: string; dev: boolean; startedAt: number }>
+    /** Read-only "is there a newer release?" — never downloads or installs. */
+    checkForUpdate(): Promise<UpdateCheck>
   }
   chat: {
     list(): Promise<ChatSummary[]>

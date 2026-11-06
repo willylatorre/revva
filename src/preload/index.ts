@@ -43,7 +43,8 @@ const api: RevvaApi = {
     openExternal: (url) => ipcRenderer.invoke(IPC.shellOpenExternal, url)
   },
   app: {
-    meta: () => ipcRenderer.invoke(IPC.appMeta)
+    meta: () => ipcRenderer.invoke(IPC.appMeta),
+    checkForUpdate: () => ipcRenderer.invoke(IPC.appCheckForUpdate)
   },
   chat: {
     list: () => ipcRenderer.invoke(IPC.chatList),

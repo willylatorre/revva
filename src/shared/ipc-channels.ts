@@ -21,6 +21,7 @@ export const IPC = {
   workspaceRemove: 'revva:workspace:remove',
   workspaceSetSetupCommand: 'revva:workspace:set-setup-command',
   workspaceRunSetupCommand: 'revva:workspace:run-setup-command',
+  appCheckForUpdate: 'revva:app:check-for-update',
   chatList: 'revva:chat:list',
   chatCreate: 'revva:chat:create',
   chatPrompt: 'revva:chat:prompt',

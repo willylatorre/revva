@@ -60,7 +60,7 @@ function buildBadgeLabel(meta: { version: string; dev: boolean }): string {
   return `v${meta.version}${meta.dev ? ' · dev' : ''}`
 }
 
-function buildBadgeTooltip(meta: { version: string; dev: boolean; startedAt: number }): string {
+function buildBadgeTooltip(meta: { version: string; dev: boolean; startedAt: number }, latest?: string): string {
   const mins = Math.max(0, Math.floor((Date.now() - meta.startedAt) / 60_000))
   const up = mins < 60 ? `${mins}m` : `${Math.floor(mins / 60)}h ${mins % 60}m`
   const spunUp = new Date(meta.startedAt).toLocaleString([], {
@@ -69,7 +69,9 @@ function buildBadgeTooltip(meta: { version: string; dev: boolean; startedAt: num
     hour: '2-digit',
     minute: '2-digit'
   })
-  return `${meta.dev ? 'Dev build (pnpm dev)' : `Installed release v${meta.version}`} — spun up ${spunUp} · up ${up}`
+  const base = `${meta.dev ? 'Dev build (pnpm dev)' : `Installed release v${meta.version}`} — spun up ${spunUp} · up ${up}`
+  // Only a real, installed build can be behind; a source checkout is not.
+  return latest && !meta.dev ? `${base}\nUpdate available: v${latest} — see Setup → Revva updates` : base
 }
 
 type SessionActivity = 'Thinking' | 'Needs you' | 'Ready' | 'Checking…' | 'Unavailable'
@@ -94,6 +96,15 @@ export default function App(): React.JSX.Element {
   const chats = useQuery({ queryKey: ['chats'], queryFn: () => window.revva.chat.list() })
   // Title badge: version, dev-vs-installed, and when this main process started.
   const appMeta = useQuery({ queryKey: ['app-meta'], queryFn: () => window.revva.app.meta(), staleTime: Infinity })
+  // One quiet check per app launch: a badge in the title bar, nothing modal.
+  const updateCheck = useQuery({
+    queryKey: ['update-check'],
+    queryFn: () => window.revva.app.checkForUpdate(),
+    staleTime: 30 * 60_000,
+    retry: false,
+    refetchOnWindowFocus: false
+  })
+  const updateAvailable = appMeta.data?.dev !== true && updateCheck.data?.available === true ? updateCheck.data.latest : undefined
   const works = useQuery({ queryKey: ['works'], queryFn: () => window.revva.work.list() })
   // The cleanup list includes linked worktrees in known repos, not main checkouts.
   const worktrees = useQuery({
@@ -384,8 +395,12 @@ export default function App(): React.JSX.Element {
                     {buildBadgeLabel(appMeta.data)}
                   </span>
                 </TooltipTrigger>
-                <TooltipContent>{buildBadgeTooltip(appMeta.data)}</TooltipContent>
+                <TooltipContent>{buildBadgeTooltip(appMeta.data, updateAvailable)}</TooltipContent>
               </Tooltip>
+            )}
+            {updateAvailable && (
+              // Quiet, non-modal: a dot beside the version. Setup has the real button.
+              <span className="no-drag ml-1 size-1.5 shrink-0 rounded-full bg-emerald-500" aria-label={`Update ${updateAvailable} available`} />
             )}
           </span>
         </div>

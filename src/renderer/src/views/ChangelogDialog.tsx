@@ -4,6 +4,7 @@ import { History } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Button } from '@/components/ui/button'
+import { RELEASES_URL } from '@shared/releases'
 import {
   Dialog,
   DialogContent,
@@ -62,7 +63,7 @@ export function ChangelogDialogButton(): React.JSX.Element {
             variant="outline"
             size="sm"
             className="self-start"
-            onClick={() => void window.revva.shell.openExternal('https://github.com/willylatorre/revva/releases')}
+            onClick={() => void window.revva.shell.openExternal(RELEASES_URL)}
           >
             Browse downloads on GitHub
           </Button>

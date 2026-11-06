@@ -7,6 +7,8 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
+- **Setup shows whether a newer Revva exists** — a read-only check against the published releases adds a **Revva updates** section to Setup → Connections with the running version, the newest release, and a **Download** button that opens the right installer for your platform (DMG or ZIP on mac, EXE or ZIP on Windows), plus **What changed** for that release's notes. The title-bar version gets a small dot when one is available. It cannot install in place: releases are not signed with an Apple Developer ID, and macOS refuses silent updates to an ad-hoc-signed app, so the honest path is the same one you used the first time. The check runs once per launch, on demand from Setup, and never surfaces an error when GitHub is unreachable — offline and rate-limited are reported as a plain note. A source checkout is never told it is behind.
+
 - (nothing yet)
 
 ## [1.12.0] - 2026-11-06

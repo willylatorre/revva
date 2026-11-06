@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import { IPC, settingsKeySchema, toolchainChoiceSchema, chatCreateInputSchema, modelRefSchema, type Workspace } from '@shared/types'
 import { keepAwake } from './keep-awake'
+import { checkForUpdate } from './update'
 import { detectDictationApps } from './dictation'
 import { openCodeService, resetServiceSpawn } from './opencode/service'
 import { openCodeUiFor } from './opencode/ui'
@@ -280,6 +281,10 @@ export function registerIpc(): void {
       startedAt: Math.round(Date.now() - process.uptime() * 1000)
     }
   })
+  // Read-only: compares the running version to GitHub's newest published release.
+  // A dev build is never "behind", so it reports the plain comparison and lets the
+  // renderer stay quiet — see src/main/update.ts for why nothing self-installs.
+  ipcMain.handle(IPC.appCheckForUpdate, () => checkForUpdate())
 
   /* ---------- chats ---------- */
   ipcMain.handle(IPC.chatList, () => chatManager.list())

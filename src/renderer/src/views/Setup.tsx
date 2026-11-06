@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { FolderPlus, Trash2, CircleCheck, CircleX, CircleDashed, Star, Plug, FolderKanban, Bot, ScrollText, ChevronRight } from 'lucide-react'
+import { FolderPlus, Trash2, CircleCheck, CircleX, CircleDashed, Star, Plug, FolderKanban, Bot, ScrollText, ChevronRight, ArrowUpCircle, Download } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -136,6 +136,12 @@ export function SetupView(): React.JSX.Element {
               <h2 className="text-sm font-medium">Jira</h2>
               <JiraSection />
             </section>
+
+            <section className="space-y-2">
+              <h2 className="text-sm font-medium">Revva updates</h2>
+              <UpdateSection />
+            </section>
+
           </TabsContent>
 
           <TabsContent value="projects" className="mt-4 space-y-2">
@@ -633,6 +639,90 @@ function ToolchainSection(): React.JSX.Element {
         </p>
       )}
       {probe.error instanceof Error && <p className="text-xs text-destructive">{probe.error.message}</p>}
+    </div>
+  )
+}
+
+/**
+ * Revva's own version, and whether a newer release exists.
+ *
+ * There is no in-place updater: mac builds are ad-hoc signed and macOS refuses to
+ * apply updates to those, so the button that works everywhere is "download it and
+ * install it the way you did the first time". The check is read-only and never
+ * runs behind the user's back on a schedule — one quiet check when this panel
+ * opens, plus an explicit Check button.
+ */
+function UpdateSection(): React.JSX.Element {
+  const meta = useQuery({ queryKey: ['app-meta'], queryFn: () => window.revva.app.meta(), staleTime: Infinity })
+  const check = useQuery({
+    queryKey: ['update-check'],
+    queryFn: () => window.revva.app.checkForUpdate(),
+    staleTime: 60_000,
+    retry: false
+  })
+  const dev = meta.data?.dev === true
+  const result = check.data
+  // A dev build's version never means "behind"; the comparison is still shown, quietly.
+  const available = !dev && result?.available === true
+  const checking = check.isFetching
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between rounded-lg border p-3">
+        <div className="flex min-w-0 items-center gap-2 text-sm">
+          {available ? (
+            <ArrowUpCircle className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+          ) : checking ? (
+            <CircleDashed className="size-4 shrink-0 animate-spin text-muted-foreground" />
+          ) : (
+            <CircleCheck className="size-4 shrink-0 text-muted-foreground" />
+          )}
+          <span className="min-w-0">
+            {dev
+              ? `Development build${meta.data?.version ? ` — v${meta.data.version}` : ''}`
+              : `Revva v${meta.data?.version ?? '…'}`}
+            {available && result?.latest
+              ? <span className="text-emerald-700 dark:text-emerald-400"> — v{result.latest} is available</span>
+              : !dev && !checking && !result?.error
+                ? <span className="text-muted-foreground"> — up to date</span>
+                : null}
+          </span>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {available && result?.downloadUrl && (
+            <Button size="sm" onClick={() => void window.revva.shell.openExternal(result.downloadUrl!)}>
+              <Download className="mr-1 size-3.5" />
+              Download
+            </Button>
+          )}
+          {available && result?.notesUrl && (
+            <Button size="sm" variant="ghost" onClick={() => void window.revva.shell.openExternal(result.notesUrl!)}>
+              What changed
+            </Button>
+          )}
+          <Button size="sm" variant="outline" disabled={checking} onClick={() => void check.refetch()}>
+            {checking ? 'Checking…' : 'Check'}
+          </Button>
+        </div>
+      </div>
+      {dev && (
+        <p className="text-xs text-muted-foreground">
+          Running from source, so a release is never “newer” than this build. The comparison above still tells you where
+          the published release stands.
+        </p>
+      )}
+      {!dev && available && (
+        <p className="text-xs text-muted-foreground">
+          Download and open the installer, then replace Revva in Applications. Revva cannot update itself in place —
+          releases are not signed with an Apple Developer ID, which macOS requires for silent updates.
+        </p>
+      )}
+      {result?.error && !checking && (
+        // Offline, rate-limited, or behind a proxy: never an error state, just an honest note.
+        <p className="text-xs text-muted-foreground">
+          Could not reach GitHub to check for updates ({result.error}).
+        </p>
+      )}
     </div>
   )
 }
