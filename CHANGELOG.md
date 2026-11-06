@@ -7,6 +7,8 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
+- **README screenshots no longer expose live workspace data** — Jira/GitHub records, chat content, local paths/endpoints and shell aliases are blurred in the checked-in screenshots. The screenshot capture script now warns that raw captures must be sanitized before committing.
+
 - **One worktree layout, set in Setup** — every clone and worktree now lives under a single `worktreeRoot` you choose, laid out as `repos/<owner>/<name>` for review clones and `worktrees/<owner>/<name>/…` (or `worktrees/local/<repo>/…` for your own checkouts) for their worktrees. The setting is now required: revva used to fall back to three unrelated defaults depending on the code path — a `<repo>-worktrees` sibling folder for ticket work, `~/<home>-worktrees/gh-reviews/<owner>` for PR work, and whatever OpenCode picked for its own — which scattered one person's checkouts across three directory trees. Worktrees are never placed inside a checkout, where repo-wide tooling would walk into other branches' files.
 
 - **The worktree dialog no longer counts phantoms** — the list showed 39 entries when only five were real worktrees. Three causes are fixed: the same folder is no longer listed once per known repo path, standalone review clones are no longer offered as removable worktrees of an unrelated repo, and a folder missing its `.git` is no longer counted as a worktree.

@@ -5,7 +5,8 @@
  *   pnpm exec electron-vite dev -- --remote-debugging-port=9223
  *   node scripts/shot-readme.mjs
  * It clicks through sidebar views over CDP and saves Page.captureScreenshot PNGs.
- * NOTE: shots contain the developer's real Jira/GitHub data — review before committing.
+ * NOTE: shots contain live developer data. Sanitize docs/images before committing;
+ * these captures include Jira/GitHub records, chat content and local machine details.
  */
 import { writeFileSync } from 'node:fs'
 
