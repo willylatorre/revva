@@ -7,7 +7,7 @@ The rule of thumb: every user-visible change gets an `[Unreleased]` bullet as pa
 
 ## [Unreleased]
 
-- **Revva's appended workflow instructions start collapsed in ticket chats** — long guard text no longer fills the conversation bubble; expand “Revva workflow instructions” when you need to inspect it. The model still receives the full prompt unchanged.
+- **A started ticket no longer opens on a wall of prompt text** — the build brief Revva sends the agent is its own text, not something you typed, so it now renders as one collapsed “Ticket brief sent to the agent” row instead of a full-height user bubble. This also fixes a regression where the collapse never triggered: it keyed on the exact guard wording, so an older run whose instructions differed in a comma still showed everything. The boundary is now the stable pipeline-context heading, and any seeded prompt is recognized regardless of template edits. Follow-up messages still show your own words first, with the appended completion instructions collapsed beneath.
 
 - **README screenshots no longer expose live workspace data** — Jira/GitHub records, chat content, local paths/endpoints and shell aliases are blurred in the checked-in screenshots. The screenshot capture script now warns that raw captures must be sanitized before committing.
 

@@ -30,7 +30,7 @@ import { shipManager } from '../ship'
 import { throughputMeter } from '../opencode/throughput'
 import { performRemoval, preflightWorktreeRemoval, probeActiveAgentsInside, requireAbsenceOfAgents, staleConfirmationError } from '../worktree-safety'
 import { checkoutBranch, listRepoBranches, probeCheckout } from '../branches'
-import { renderPrompt, DEFAULT_START_PROMPT, BUILD_COMPLETION_INSTRUCTIONS, RESUME_NOTE } from '@shared/prompts'
+import { renderPrompt, DEFAULT_START_PROMPT, BUILD_COMPLETION_INSTRUCTIONS, PIPELINE_CONTEXT_HEADER, RESUME_NOTE } from '@shared/prompts'
 import {
   IPC,
   type ChatReviewResult,
@@ -779,7 +779,7 @@ class WorkManager {
           ]
         : []),
       // Structural pipeline facts — not stylistic, always appended.
-      `Pipeline context (Revva):`,
+      PIPELINE_CONTEXT_HEADER,
       '- You are in a dedicated git worktree on branch ' + (input.resumeBranch ?? slugBranch(ticketKey)) + '.',
       '- Commit your work with clear messages referencing ' + ticketKey + '. Do not push, do not open PRs — Revva ships after review.',
       BUILD_COMPLETION_INSTRUCTIONS,

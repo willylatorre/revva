@@ -49,6 +49,13 @@ Write Markdown that will be embedded inside the existing PR body:
 export const PROMPT_PLACEHOLDER_HELP =
   'Placeholders: {ticketKey} {summary} {description} {prUrl} {prNumber} {repo} {title} {base} {head}'
 
+/**
+ * Structural heading Revva always appends to a pipeline build prompt. Stable
+ * across template/guard revisions, so surfaces can recognize a seeded prompt
+ * from text alone (an older run's wording must still be recognized).
+ */
+export const PIPELINE_CONTEXT_HEADER = 'Pipeline context (Revva):'
+
 /** Always appended to ticket-seeded prompts: the repo's own workflow skills gate on plugins Revva cannot enable. */
 export const WORKFLOW_SKILL_GUARD = `Revva workflow guard:
 - Work from this prompt directly. Do not run the repository's ticket or review workflow skills or slash commands (e.g. /jiraWork, /reviewPR) — Revva orchestrates those steps itself.

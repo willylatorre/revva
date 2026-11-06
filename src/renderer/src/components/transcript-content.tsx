@@ -12,7 +12,7 @@ import { stabilizeGroups, type TranscriptGroup } from '@/lib/transcript-groups'
 import { MD_COMPONENTS } from '@/components/message-markdown'
 import { AssistantMarkdown } from '@/components/assistant-markdown'
 import type { ChatMessage, ChatToolCall } from '@shared/types'
-import { BUILD_COMPLETION_INSTRUCTIONS } from '@shared/prompts'
+import { BUILD_COMPLETION_INSTRUCTIONS, PIPELINE_CONTEXT_HEADER, WORKFLOW_SKILL_GUARD } from '@shared/prompts'
 
 // Preserve ordinary line breaks in user-written prompts while rendering Markdown.
 export const USER_MD_COMPONENTS: typeof MD_COMPONENTS = {
@@ -253,14 +253,58 @@ const AssistantTurn = memo(function AssistantTurn({
   )
 })
 
+/**
+ * Separate what the human wrote from the scaffolding Revva appends to a build
+ * prompt. The boundary is the pipeline context heading, not the guard text:
+ * a run seeded before the guard was reworded must still read as one short
+ * request plus hidden instructions. Follow-ups carry only the completion
+ * instructions, so either marker bounds them at the earliest occurrence.
+ */
+function splitRevvaScaffolding(text: string): { userText: string; revvaInstructions: string | null } {
+  const candidates = [text.indexOf(PIPELINE_CONTEXT_HEADER), text.indexOf(BUILD_COMPLETION_INSTRUCTIONS), text.indexOf(WORKFLOW_SKILL_GUARD)]
+  const found = candidates.filter((index) => index >= 0)
+  if (found.length === 0) return { userText: text, revvaInstructions: null }
+  const start = Math.min(...found)
+  return { userText: text.slice(0, start).trimEnd(), revvaInstructions: text.slice(start) }
+}
+
+/**
+ * A pipeline build prompt is Revva's own text, not something the human typed:
+ * it always carries the structural pipeline-context block. Recognizing it lets
+ * the transcript show a compact row instead of a fake user bubble.
+ */
+function isSeededBuildPrompt(text: string): boolean {
+  return text.includes(PIPELINE_CONTEXT_HEADER)
+}
+
+/** Collapsed row for a seeded build prompt — expand to read the exact brief. */
+const SeededPromptRow = memo(function SeededPromptRow({ text }: { text: string }): React.JSX.Element {
+  return (
+    <div className="flex justify-start">
+      <div className="flex min-w-0 max-w-[85%] flex-col gap-1 rounded-lg border border-dashed bg-transparent px-3.5 py-2 text-[13px] leading-relaxed text-muted-foreground">
+        <Collapsible className="group/collapsible min-w-0">
+          <CollapsibleTrigger className="flex items-center gap-1 text-xs hover:text-foreground">
+            <ChevronRight className="size-3 shrink-0 transition-transform group-data-[open]/collapsible:rotate-90" />
+            Ticket brief sent to the agent
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="mt-2 min-w-0 text-foreground">
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={USER_MD_COMPONENTS}>{text}</ReactMarkdown>
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+      </div>
+    </div>
+  )
+})
+
 export const MessageRow = memo(function MessageRow({ message, streaming }: { message: ChatMessage; streaming?: boolean }): React.JSX.Element {
   const isUser = message.role === 'user'
   const empty = message.text === ''
   const images = message.images ?? []
   const tools = message.tools ?? []
-  const revvaInstructionsStart = isUser ? message.text.indexOf(BUILD_COMPLETION_INSTRUCTIONS) : -1
-  const userText = revvaInstructionsStart < 0 ? message.text : message.text.slice(0, revvaInstructionsStart).trimEnd()
-  const revvaInstructions = revvaInstructionsStart < 0 ? null : message.text.slice(revvaInstructionsStart)
+  if (isUser && images.length === 0 && isSeededBuildPrompt(message.text)) return <SeededPromptRow text={message.text} />
+  const { userText, revvaInstructions } = isUser ? splitRevvaScaffolding(message.text) : { userText: message.text, revvaInstructions: null }
   return (
     <div className={cn('flex', isUser ? 'justify-end' : 'justify-start')}>
       <div
