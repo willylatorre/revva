@@ -12,6 +12,7 @@ import { stabilizeGroups, type TranscriptGroup } from '@/lib/transcript-groups'
 import { MD_COMPONENTS } from '@/components/message-markdown'
 import { AssistantMarkdown } from '@/components/assistant-markdown'
 import type { ChatMessage, ChatToolCall } from '@shared/types'
+import { BUILD_COMPLETION_INSTRUCTIONS } from '@shared/prompts'
 
 // Preserve ordinary line breaks in user-written prompts while rendering Markdown.
 export const USER_MD_COMPONENTS: typeof MD_COMPONENTS = {
@@ -257,6 +258,9 @@ export const MessageRow = memo(function MessageRow({ message, streaming }: { mes
   const empty = message.text === ''
   const images = message.images ?? []
   const tools = message.tools ?? []
+  const revvaInstructionsStart = isUser ? message.text.indexOf(BUILD_COMPLETION_INSTRUCTIONS) : -1
+  const userText = revvaInstructionsStart < 0 ? message.text : message.text.slice(0, revvaInstructionsStart).trimEnd()
+  const revvaInstructions = revvaInstructionsStart < 0 ? null : message.text.slice(revvaInstructionsStart)
   return (
     <div className={cn('flex', isUser ? 'justify-end' : 'justify-start')}>
       <div
@@ -283,9 +287,26 @@ export const MessageRow = memo(function MessageRow({ message, streaming }: { mes
           </div>
         )}
         {isUser ? (
-          <div className="min-w-0">
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={USER_BUBBLE_MD_COMPONENTS}>{message.text}</ReactMarkdown>
-          </div>
+          <>
+            {userText && (
+              <div className="min-w-0">
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={USER_BUBBLE_MD_COMPONENTS}>{userText}</ReactMarkdown>
+              </div>
+            )}
+            {revvaInstructions && (
+              <Collapsible className="group/collapsible min-w-0">
+                <CollapsibleTrigger className="flex items-center gap-1 text-xs opacity-75 hover:opacity-100">
+                  <ChevronRight className="size-3 shrink-0 transition-transform group-data-[open]/collapsible:rotate-90" />
+                  Revva workflow instructions
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <div className="mt-2 min-w-0">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={USER_BUBBLE_MD_COMPONENTS}>{revvaInstructions}</ReactMarkdown>
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+            )}
+          </>
         ) : (
           <div className="min-w-0">
             {message.thinking && <ThinkingBlock text={message.thinking} />}
