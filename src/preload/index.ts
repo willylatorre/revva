@@ -35,7 +35,9 @@ const api: RevvaApi = {
     repositories: (id) => ipcRenderer.invoke(IPC.workspaceRepositories, id),
     add: (path) => ipcRenderer.invoke(IPC.workspaceAdd, path),
     remove: (id) => ipcRenderer.invoke(IPC.workspaceRemove, id),
-    pickFolder: () => ipcRenderer.invoke(IPC.dialogPickFolder)
+    pickFolder: () => ipcRenderer.invoke(IPC.dialogPickFolder),
+    setSetupCommand: (id, command) => ipcRenderer.invoke(IPC.workspaceSetSetupCommand, id, command),
+    runSetupCommand: (workId) => ipcRenderer.invoke(IPC.workspaceRunSetupCommand, workId)
   },
   shell: {
     openExternal: (url) => ipcRenderer.invoke(IPC.shellOpenExternal, url)
@@ -123,15 +125,17 @@ const api: RevvaApi = {
   },
   comments: {
     pending: () => ipcRenderer.invoke(IPC.commentsPending),
-    tackle: (workId) => ipcRenderer.invoke(IPC.commentsTackle, workId)
+    tackle: (workId) => ipcRenderer.invoke(IPC.commentsTackle, workId),
+    dismiss: (workId) => ipcRenderer.invoke(IPC.commentsDismiss, workId),
+    reply: (workId, body) => ipcRenderer.invoke(IPC.commentsReply, workId, body)
   },
   github: {
     list: (scope, force) => ipcRenderer.invoke(IPC.githubList, scope, force),
-    review: (prUrl) => ipcRenderer.invoke(IPC.githubReview, prUrl),
+    review: (prUrl, sel) => ipcRenderer.invoke(IPC.githubReview, prUrl, sel),
     reviewSetup: (sessionId) => ipcRenderer.invoke(IPC.githubReviewSetup, sessionId),
     chat: (prUrl) => ipcRenderer.invoke(IPC.githubChat, prUrl),
-    solveConflicts: (prUrl) => ipcRenderer.invoke(IPC.githubSolveConflicts, prUrl),
-    solveComments: (prUrl) => ipcRenderer.invoke(IPC.githubSolveComments, prUrl),
+    solveConflicts: (prUrl, sel) => ipcRenderer.invoke(IPC.githubSolveConflicts, prUrl, sel),
+    solveComments: (prUrl, sel) => ipcRenderer.invoke(IPC.githubSolveComments, prUrl, sel),
     markSeen: (prUrl) => ipcRenderer.invoke(IPC.githubSeen, prUrl),
     alerts: () => ipcRenderer.invoke(IPC.githubAlerts),
     markAlertsSeen: (urls) => ipcRenderer.invoke(IPC.githubAlertsSeen, urls),

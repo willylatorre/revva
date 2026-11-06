@@ -90,12 +90,47 @@ export function ConversationActions({ work }: { work: WorkSummary }): React.JSX.
         <TooltipContent className="max-w-xs text-[11px]">{work.blocker}</TooltipContent>
       </Tooltip>
     )}
+    <SetupRetryButton work={work} />
     <ShipDialog work={work} open={shipOpen} onClose={() => { setShipOpen(false); trigger.current?.focus() }} />
   </>
 }
 
-/** Secondary metadata lives here instead of competing with the conversation title. */
-export function ConversationDetails({ sessionId, directory, work, children }: {
+/**
+ * A build parked by a failed environment setup has no conversation yet, so the
+ * usual chat controls cannot help. Rerun the same command in place and, on
+ * success, start the build the failure prevented.
+ */
+function SetupRetryButton({ work }: { work: WorkSummary }): React.JSX.Element | null {
+  const qc = useQueryClient()
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const stuck = work.state === 'WAITING_HUMAN' && !work.sessionId && /Environment setup failed/.test(work.blocker ?? '')
+  if (!stuck) return null
+  const retry = (): void => {
+    setBusy(true)
+    setError(null)
+    void window.revva.workspace
+      .runSetupCommand(work.id)
+      .then(() => {
+        void qc.invalidateQueries({ queryKey: ['works'] })
+        void qc.invalidateQueries({ queryKey: ['chats'] })
+        void qc.invalidateQueries({ queryKey: ['workspaces'] })
+      })
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setBusy(false))
+  }
+  return (
+    <div className="flex shrink-0 items-center gap-1.5">
+      <Button size="sm" variant="outline" disabled={busy} onClick={retry}>
+        {busy ? <Loader2 data-icon="inline-start" className="animate-spin" /> : null}
+        {busy ? 'Setting up…' : 'Retry env setup'}
+      </Button>
+      {error && <span className="max-w-xs truncate text-[11px] text-destructive" title={error}>{error}</span>}
+    </div>
+  )
+}
+
+/** Secondary metadata lives here instead of competing with the conversation title. */export function ConversationDetails({ sessionId, directory, work, children }: {
   sessionId: string; directory?: string; work?: WorkSummary; children: ReactNode
 }): React.JSX.Element {
   const qc = useQueryClient()

@@ -21,6 +21,7 @@ import { eventBus, type RawEvent } from '../opencode/bus'
 import { shipManager } from '../ship'
 import { workManager } from '../pipeline/works'
 import { IPC, type JiraComment, type PushEvent } from '@shared/types'
+import { COMMIT_IDENTITY_GUARD } from '@shared/prompts'
 
 const DEFAULT_POLL_SECS = 300 // docs/ARCHITECTURE.md: "Poll loop (default 5 min)"
 /** Read at wire time; changing the setting takes effect on restart. */
@@ -43,6 +44,7 @@ interface NewCommentRow {
 }
 
 function toComment(r: NewCommentRow): JiraComment {
+  const site = jiraMcp.siteWebUrl()
   return {
     workId: r.work_id,
     ticketKey: r.ticket_key,
@@ -50,7 +52,9 @@ function toComment(r: NewCommentRow): JiraComment {
     author: r.author,
     body: r.body,
     createdAt: r.created_at,
-    tackledAt: r.tackled_at ?? undefined
+    tackledAt: r.tackled_at ?? undefined,
+    // So the alert can send you to the ticket to reply there, without reworking.
+    url: site ? `${site}/browse/${r.ticket_key}` : undefined
   }
 }
 
@@ -83,6 +87,30 @@ class CommentWatcher {
 
   newCount(): number {
     return this.pending().length
+  }
+
+  /**
+   * "Handled, thanks." Marks the work's pending comments as dealt with without
+   * touching the branch. Not every Jira comment needs a rework agent — a FYI, a
+   * question already answered elsewhere, or something you will handle by hand.
+   */
+  dismiss(workId: string): void {
+    getDb().prepare('UPDATE jira_comment SET tackled_at = ? WHERE work_id = ? AND tackled_at IS NULL').run(Date.now(), workId)
+    this.pushPending()
+  }
+
+  /**
+   * Answer on the ticket without a rework session: post the reply as a normal
+   * Jira comment (the same `*revva*:` marker the watcher skips) and clear the
+   * alert. No commit, no push, no worktree.
+   */
+  async reply(workId: string, body: string): Promise<void> {
+    const text = body.trim()
+    if (!text) throw new Error('Write a reply first.')
+    const work = getDb().prepare('SELECT ticket_key FROM work WHERE id = ?').get(workId) as { ticket_key: string } | undefined
+    if (!work) throw new Error('Work not found.')
+    await jiraMcp.addComment(work.ticket_key, `*revva*: ${text.slice(0, 4000)}`)
+    this.dismiss(workId)
   }
 
   /** One poll pass: every work with a PR (or shipped) gets its ticket's comments checked. */
@@ -170,6 +198,7 @@ class CommentWatcher {
     const prompt = [
       `Ticket ${work.ticket_key} received new Jira comments after the PR was opened (${work.pr_url ?? 'see branch'}).`,
       `Worktree: ${work.worktree_dir} (branch ${work.branch}). Address the feedback below: change code where needed, commit (do not push — revva pushes).`,
+      COMMIT_IDENTITY_GUARD,
       'Then write a short reply per comment, under a final section headed "REVVA-REPLY" (plain markdown, one bullet per comment).',
       '',
       '--- New Jira comments ---',

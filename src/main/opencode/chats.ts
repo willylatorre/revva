@@ -279,10 +279,23 @@ class ChatManager {
     }
   }
 
-  /** Move a conversation between ticket groups without changing its transcript. */
+  /**
+   * Move a conversation between ticket groups without changing its transcript.
+   *
+   * The `chat` index row is normally required (it holds the ticket/PR properties),
+   * but it can be gone while the pipeline row survives — a session deleted by
+   * another client, a purged service store, a link that outlived its chat. Detaching
+   * is still exactly what the user asked for there, so it retires the stale pipeline
+   * row instead of answering "Chat not found", which left the row unremovable.
+   */
   async setTicket(sessionId: string, ticketKey: string | null): Promise<void> {
-    const row = getDb().prepare('SELECT session_id, ticket_key FROM chat WHERE session_id = ?').get(sessionId) as { session_id: string; ticket_key: string | null } | undefined
-    if (!row) throw new Error('Chat not found.')
+    const row = getDb().prepare('SELECT session_id, ticket_key, pr_url FROM chat WHERE session_id = ?').get(sessionId) as { session_id: string; ticket_key: string | null; pr_url: string | null } | undefined
+    if (!row) {
+      if (ticketKey !== null) throw new Error('This conversation is no longer in Revva’s list, so it cannot be tagged. Link a ticket from a conversation that still exists.')
+      // The pipeline row is the only thing left pointing at it; detaching heals it.
+      await workManager.detachTicket(sessionId)
+      return
+    }
     if (ticketKey !== null) {
       // Accept existing groups or a manually typed key; normalize (upper-case, no leading zeros).
       // Bare numbers default to the Jira project in use, e.g. "129634" → CLN-129634.
@@ -293,7 +306,17 @@ class ChatManager {
     }
     await workManager.requireEditableLinks(sessionId)
     const api = openCodeService.api
-    const session = await api.session.get({ sessionID: sessionId })
+    let session: Awaited<ReturnType<typeof api.session.get>>
+    try {
+      session = await api.session.get({ sessionID: sessionId })
+    } catch (err) {
+      // The index row outlived its session. Detaching needs no session at all —
+      // heal both rows so the stale ticket link stops being offered.
+      if (ticketKey !== null || !isMissingSession(err)) throw err
+      getDb().prepare('UPDATE chat SET ticket_key = NULL WHERE session_id = ?').run(sessionId)
+      await workManager.detachTicket(sessionId)
+      return
+    }
     const metadata = (session.metadata ?? {}) as Record<string, unknown>
     const revva = (metadata.revva ?? {}) as Record<string, unknown>
     await api.session.update({ sessionID: sessionId, metadata: { ...metadata, revva: { ...revva, ticketKey } } })

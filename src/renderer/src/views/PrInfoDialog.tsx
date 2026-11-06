@@ -21,7 +21,8 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import { jiraStatusClasses } from '@/lib/status-colors'
 import { useLinkedTickets } from '@/lib/linked-work'
-import type { PullRequest } from '@shared/types'
+import { useWorktreeSetup } from '@/lib/use-worktree-setup'
+import type { PullRequest, RoleSel } from '@shared/types'
 import { prGate, statusLine } from './PrConversationActions'
 
 export function PrInfoDialog({
@@ -58,15 +59,17 @@ export function PrInfoDialog({
     onSuccess: (res) => afterSession(res.sessionId)
   })
   const startReview = useMutation({
-    mutationFn: () => window.revva.github.review(pr.url),
+    mutationFn: (sel?: RoleSel) => window.revva.github.review(pr.url, sel),
     onSuccess: (res) => afterSession(res.sessionId)
   })
+  const setup = useWorktreeSetup()
   const data = detail.data
   const gate = data ? prGate(data) : undefined
   const busy = startChat.isPending || startReview.isPending
   return (
-    <Dialog open={open} onOpenChange={(o) => !o && !busy && onClose()}>
-      <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
+    <>
+      <Dialog open={open} onOpenChange={(o) => !o && !busy && onClose()}>
+        <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="pr-6 text-[15px] leading-snug">{data?.title ?? pr.title}</DialogTitle>
           <DialogDescription className="flex flex-wrap items-center gap-x-1.5 font-mono text-[11px]">
@@ -192,7 +195,11 @@ export function PrInfoDialog({
                   className="gap-1.5"
                   disabled={busy || !gate?.open}
                   title={gate?.open ? 'Read-only review agent session' : 'PR is not open'}
-                  onClick={() => startReview.mutate()}
+                  onClick={() =>
+                    void setup
+                      .ready('to check the PR out for its review session')
+                      .then((answer) => answer && startReview.mutate(answer.sel))
+                  }
                 >
                   {startReview.isPending ? <Loader2 className="size-4 animate-spin" /> : <ScanEye className="size-4" />}
                   Review session
@@ -205,7 +212,9 @@ export function PrInfoDialog({
             </div>
           </>
         )}
-      </DialogContent>
-    </Dialog>
+        </DialogContent>
+      </Dialog>
+      {setup.dialog}
+    </>
   )
 }

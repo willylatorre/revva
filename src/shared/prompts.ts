@@ -11,6 +11,18 @@ const PROPORTIONAL_WORK_GUIDANCE = `Keep investigation proportional to the task:
 - Use skills when directly relevant or required by the repository. Use research/planning subagents only when the task's complexity warrants their overhead.
 - Run the repository's required checks; efficiency is not a reason to skip verification or safety rules.`
 
+/**
+ * Always appended to any prompt that tells an agent to commit. An agent once
+ * invented `Revva <revva@revvity.com>` with `git -c user.name/-c user.email`
+ * and put a fabricated `Co-authored-by` trailer on the permanent record, so the
+ * rule is stated wherever a commit is expected — not only in the default
+ * templates, which users can replace.
+ */
+export const COMMIT_IDENTITY_GUARD = `Revva commit guard:
+- Commit with the repository's configured identity. Never pass \`-c user.name\`, \`-c user.email\`, \`--author\`, or \`GIT_AUTHOR_*\`/\`GIT_COMMITTER_*\` to invent or override an author: an agent is not a person and must never sign as "Revva" or any other name.
+- Add no \`Co-authored-by\` trailer naming yourself, "Revva", or any agent — only real people belong there.
+- Never sign a commit: no \`-S\`, no \`--gpg-sign\`, and never set \`commit.gpgsign\`. If this checkout's config already enables signing, commit with \`--no-gpg-sign\`. Revva never signs commits.`
+
 export const DEFAULT_START_PROMPT = `You are working on Jira ticket {ticketKey}: {summary}.
 
 {description}
@@ -64,6 +76,8 @@ export const WORKFLOW_SKILL_GUARD = `Revva workflow guard:
 
 /** Always appended, including when the user customized the start template. */
 export const BUILD_COMPLETION_INSTRUCTIONS = `${WORKFLOW_SKILL_GUARD}
+
+${COMMIT_IDENTITY_GUARD}
 
 Revva implementation phase:
 - Do not launch code-review or UI-review agents during implementation; Revva runs the independent review team after you finish. Run the repository's appropriate verification yourself.

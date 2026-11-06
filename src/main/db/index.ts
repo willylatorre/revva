@@ -204,6 +204,19 @@ function migrate(db: Database.Database): void {
       PRAGMA user_version = 14;
     `)
   }
+  if (version < 15) {
+    // A worktree is a bare checkout: no venv, no node_modules, no installed
+    // dependencies. Each workspace may name the command that provisions one
+    // (uv sync, pnpm install, poetry install…). Revva runs it verbatim in the new
+    // worktree and never reuses the main checkout's environment, whose editable
+    // installs would silently resolve back to the main tree.
+    addColumnIfMissing(db, 'workspace', 'setup_command', 'TEXT')
+    addColumnIfMissing(db, 'workspace', 'setup_command_last', 'TEXT')
+    // The exact start request, so a build parked by a failed setup can be retried
+    // without asking the user to repeat the dialog (and without a second worktree).
+    addColumnIfMissing(db, 'work', 'start_input', 'TEXT')
+    db.exec('PRAGMA user_version = 15;')
+  }
 }
 
 function addColumnIfMissing(db: Database.Database, table: string, column: string, decl: string): boolean {

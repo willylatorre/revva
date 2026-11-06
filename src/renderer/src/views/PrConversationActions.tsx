@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ActionError } from '@/lib/ask-agent'
+import { useWorktreeSetup } from '@/lib/use-worktree-setup'
 import type { PrDetail, PrMergeMethod, WorkSummary } from '@shared/types'
 import { ReviewRerunButton } from './ReviewPanel'
 import { ShipDialog, shipBlockReason } from './ShipPanel'
@@ -86,6 +87,7 @@ export function PrMenu({
   onAskAgent: (text: string) => Promise<void>
 }): React.JSX.Element {
   const qc = useQueryClient()
+  const setup = useWorktreeSetup()
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   /** Which control failed — the fallback button names it in the fix request. */
@@ -115,22 +117,29 @@ export function PrMenu({
   const startSession = (kind: 'review' | 'solve'): void => {
     setBusy(kind)
     setError(null)
-    void (kind === 'review'
-      ? Promise.resolve(window.revva.github.markSeen(prUrl)).then(() => window.revva.github.review(prUrl))
-      : window.revva.github.solveConflicts(prUrl)
-    )
-      .then((res) => {
-        void qc.invalidateQueries({ queryKey: ['chats'] })
-        refreshPr()
-        onOpenChat?.(res.sessionId)
-      })
-      .catch((err) => {
-        const msg = err instanceof Error ? err.message : String(err)
-        setError(msg)
-        setErrorAction(kind === 'review' ? 'start review session' : 'solve conflicts')
-        toast.error(kind === 'review' ? 'Could not start the review session' : 'Could not start conflict solving', {
-          description: msg
-        })
+    void setup
+      .ready(kind === 'review' ? 'to check the PR out for its review session' : 'to check the PR out for conflict resolution')
+      .then((answer) => {
+        if (!answer) return
+        return (kind === 'review'
+          ? Promise.resolve(window.revva.github.markSeen(prUrl)).then(() =>
+              window.revva.github.review(prUrl, answer.sel)
+            )
+          : window.revva.github.solveConflicts(prUrl, answer.sel)
+        )
+          .then((res) => {
+            void qc.invalidateQueries({ queryKey: ['chats'] })
+            refreshPr()
+            onOpenChat?.(res.sessionId)
+          })
+          .catch((err) => {
+            const msg = err instanceof Error ? err.message : String(err)
+            setError(msg)
+            setErrorAction(kind === 'review' ? 'start review session' : 'solve conflicts')
+            toast.error(kind === 'review' ? 'Could not start the review session' : 'Could not start conflict solving', {
+              description: msg
+            })
+          })
       })
       .finally(() => setBusy(null))
   }
@@ -293,6 +302,7 @@ export function PrMenu({
         </DropdownMenuContent>
       </DropdownMenu>
       {work && <ShipDialog work={work} open={shipOpen} onClose={() => setShipOpen(false)} />}
+      {setup.dialog}
     </>
   )
 }

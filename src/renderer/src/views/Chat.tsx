@@ -15,11 +15,12 @@ import { cn } from '@/lib/utils'
 import { ActionError, AskAgentProvider } from '@/lib/ask-agent'
 import { beginTranscriptSnapshot, displayTranscript, finishTranscriptSnapshot, mergeHistory, transcriptReady, useTranscriptVisibility } from '@/lib/transcript-stream'
 import { transcriptRequest } from '@/lib/transcript-requests'
+import { useWorktreeSetup } from '@/lib/use-worktree-setup'
 import { SessionStats } from '@/components/session-stats'
 import { AgentsPanel } from '@/components/agents-panel'
 import { TranscriptActivityStrip, TranscriptContent, createTranscriptActivityStore } from '@/components/transcript-content'
 import { Choice } from './NewChatDialog'
-import type { AgentInfo, ChatMessage, DictationApp, FileHit, ModelRef, PromptImage, PromptRefs, QueuedMessage, SkillInfo, WorkSummary, TranscriptPage } from '@shared/types'
+import type { AgentInfo, ChatMessage, DictationApp, FileHit, ModelRef, PromptImage, PromptRefs, QueuedMessage, RoleSel, SkillInfo, WorkSummary, TranscriptPage } from '@shared/types'
 import { FormCard, PermissionCard, useInbox } from './InboxView'
 import { PrConversationActions } from './PrConversationActions'
 import { ConversationEnvironment, ConversationActions, ConversationDetails } from './ConversationEnvironment'
@@ -1118,10 +1119,11 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
     void qc.invalidateQueries({ queryKey: ['github-review-setup', sessionId] })
     void qc.invalidateQueries({ queryKey: ['chats'] })
   }), [qc, sessionId])
+  const setup = useWorktreeSetup()
   const retryReview = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (sel?: RoleSel) => {
       if (!chat?.prUrl) throw new Error('This chat is not linked to a PR.')
-      return window.revva.github.review(chat.prUrl)
+      return window.revva.github.review(chat.prUrl, sel)
     },
     onSuccess: (res) => {
       void qc.invalidateQueries({ queryKey: ['chats'] })
@@ -1200,7 +1202,7 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
           <p className="text-muted-foreground">{reviewSetup.data.stage}</p>
           {reviewSetup.data.error && <p className="mt-1 whitespace-pre-wrap break-words text-destructive">{reviewSetup.data.error}</p>}
         </div>
-        {reviewSetup.data.state === 'failed' && <Button size="sm" variant="outline" disabled={retryReview.isPending} onClick={() => retryReview.mutate()}>
+        {reviewSetup.data.state === 'failed' && <Button size="sm" variant="outline" disabled={retryReview.isPending} onClick={() => void setup.ready('to retry this PR review').then((answer) => answer && retryReview.mutate(answer.sel))}>
           {retryReview.isPending ? <Loader2 data-icon="inline-start" className="animate-spin" /> : <RotateCw data-icon="inline-start" />}
           Retry
         </Button>}
@@ -1294,6 +1296,7 @@ export function ChatView({ sessionId, onOpenChat, work: providedWork }: { sessio
         </>
       }
     />
+    {setup.dialog}
     </ConversationEnvironment>
     </AskAgentProvider>
   )

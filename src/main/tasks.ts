@@ -11,7 +11,7 @@ import { chatManager } from './opencode/chats'
 import { getDb, settingGet } from './db'
 import { getTicket } from './jira/board'
 import { jiraBodyToText } from './jira/rich-text'
-import { renderPrompt, DEFAULT_TACKLE_PROMPT } from '@shared/prompts'
+import { renderPrompt, DEFAULT_TACKLE_PROMPT, COMMIT_IDENTITY_GUARD } from '@shared/prompts'
 import type { TaskSessionResult } from '@shared/types'
 
 function expandTilde(p: string): string {
@@ -35,11 +35,13 @@ export async function startTicketSession(ticketKey: string, repoDir?: string): P
   // The chat opens empty. The tackle prompt (Setup-tunable) becomes the chat's
   // stored context and rides along on the user's FIRST message.
   const template = settingGet<string>('prompt.tackle') || DEFAULT_TACKLE_PROMPT
-  const context = renderPrompt(template, {
+  const context = `${renderPrompt(template, {
     ticketKey,
     summary: ticket?.summary ?? '',
     description: extractDescription(ticket?.raw) || '(No ticket description.)'
-  })
+  })}
+
+${COMMIT_IDENTITY_GUARD}`
   const chat = await chatManager.create({
     directory: dir,
     title: `${ticketKey} session`,

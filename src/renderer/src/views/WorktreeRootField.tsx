@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { FolderTree } from 'lucide-react'
+import { FolderOpen, FolderTree } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -25,6 +25,12 @@ export function WorktreeRootField(): React.JSX.Element {
     })
   }
 
+  const browse = (): void => {
+    void window.revva.workspace.pickFolder().then((picked) => {
+      if (picked) persist(picked)
+    })
+  }
+
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between">
@@ -39,13 +45,18 @@ export function WorktreeRootField(): React.JSX.Element {
           )}
         </div>
       </div>
-      <Input
-        placeholder="/Users/you/revva"
-        value={value}
-        onChange={(e) => setDraft(e.target.value)}
-        onKeyDown={(e) => e.key === 'Enter' && persist(value.trim())}
-        className="font-mono text-xs"
-      />
+      <div className="flex gap-2">
+        <Input
+          placeholder="/Users/you/revva"
+          value={value}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && persist(value.trim())}
+          className="font-mono text-xs"
+        />
+        <Button type="button" size="icon" variant="outline" aria-label="Browse for a worktree folder" title="Browse for a folder" onClick={browse}>
+          <FolderOpen />
+        </Button>
+      </div>
       <p className="text-[11px] leading-relaxed text-muted-foreground">
         Required. Review clones go to <code>&lt;root&gt;/repos/&lt;owner&gt;/&lt;repo&gt;</code>; their worktrees, and the
         worktrees of your own checkouts, go to <code>&lt;root&gt;/worktrees/…</code>. Keep it outside your repositories.

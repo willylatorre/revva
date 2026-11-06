@@ -39,11 +39,12 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { CardBoard, CardZone, moveToZone } from '@/components/CardBoard'
 import { PrInfoDialog } from './PrInfoDialog'
 import { useCardOrder } from '@/lib/use-card-order'
+import { useWorktreeSetup } from '@/lib/use-worktree-setup'
 import { cn } from '@/lib/utils'
 import { useGithubPrs } from '@/lib/github-prs'
 import { useLinkedTickets } from '@/lib/linked-work'
 import { jiraStatusClasses } from '@/lib/status-colors'
-import type { LinkedTicket, PrAlert, PrMergeMethod, PullRequest } from '@shared/types'/** Unseen PR events (comments/conflicts/approvals) — sidebar bell + polling feed.
+import type { LinkedTicket, PrAlert, PrMergeMethod, PullRequest, RoleSel } from '@shared/types'/** Unseen PR events (comments/conflicts/approvals) — sidebar bell + polling feed.
  *  The feed is push-based (main sends it after every poll), so no refetch
  *  interval and no focus-refetch: one fetch on app start, pushes from there. */
 export function useGithubAlerts(): PrAlert[] {
@@ -78,12 +79,13 @@ export function GitHubView({
   onOpenChat: (sessionId: string) => void
 }): React.JSX.Element {
   const qc = useQueryClient()
+  const setup = useWorktreeSetup()
   const [scope, setScope] = useState<'mine' | 'review'>('mine')
   const [busyUrl, setBusyUrl] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const prs = useGithubPrs(scope)
   const review = useMutation({
-    mutationFn: (prUrl: string) => window.revva.github.review(prUrl),
+    mutationFn: ({ prUrl, sel }: { prUrl: string; sel?: RoleSel }) => window.revva.github.review(prUrl, sel),
     onSuccess: (res) => {
       void qc.invalidateQueries({ queryKey: ['chats'] })
       void qc.invalidateQueries({ queryKey: ['gh-prs'] })
@@ -111,7 +113,7 @@ export function GitHubView({
     chatSession.mutate(url, { onSettled: () => setBusyUrl(null) })
   }
   const solveConflicts = useMutation({
-    mutationFn: (prUrl: string) => window.revva.github.solveConflicts(prUrl),
+    mutationFn: ({ prUrl, sel }: { prUrl: string; sel?: RoleSel }) => window.revva.github.solveConflicts(prUrl, sel),
     onSuccess: (res) => {
       void qc.invalidateQueries({ queryKey: ['chats'] })
       onOpenChat(res.sessionId)
@@ -123,7 +125,7 @@ export function GitHubView({
     }
   })
   const solveComments = useMutation({
-    mutationFn: (prUrl: string) => window.revva.github.solveComments(prUrl),
+    mutationFn: ({ prUrl, sel }: { prUrl: string; sel?: RoleSel }) => window.revva.github.solveComments(prUrl, sel),
     onSuccess: (res) => {
       setActionError(null)
       void qc.invalidateQueries({ queryKey: ['chats'] })
@@ -136,6 +138,24 @@ export function GitHubView({
       setActionError(e.message)
       toast.error('Could not start review-comment answers', { description: e.message })
     }
+  })
+  /**
+   * Every action below needs a checkout, so each one asks for the worktree root
+   * (and the agent/model) up front instead of failing after the fact. A missing
+   * answer cancels quietly: the user just closed the dialog.
+   */
+  const needsCheckout =
+    (reason: string, run: (url: string, sel: RoleSel | undefined) => void) =>
+    (url: string): void => {
+      setActionError(null)
+      void setup.ready(reason).then((answer) => {
+        if (answer) run(url, answer.sel)
+      })
+    }
+  const startReview = needsCheckout('to check the PR out for its review session', (url, sel) => {
+    setBusyUrl(url)
+    void window.revva.github.markSeen(url)
+    review.mutate({ prUrl: url, sel }, { onSettled: () => setBusyUrl(null) })
   })
   const merge = useMutation({
     mutationFn: ({ prUrl, method }: { prUrl: string; method: PrMergeMethod }) =>
@@ -294,8 +314,8 @@ export function GitHubView({
             scope={scope}
             mergingUrl={merge.isPending ? (merge.variables?.prUrl ?? null) : null}
             rebasingUrl={rebase.isPending ? rebase.variables : null}
-            solvingUrl={solveConflicts.isPending ? solveConflicts.variables : null}
-            answeringUrl={solveComments.isPending ? solveComments.variables : null}
+            solvingUrl={solveConflicts.isPending ? (solveConflicts.variables?.prUrl ?? null) : null}
+            answeringUrl={solveComments.isPending ? (solveComments.variables?.prUrl ?? null) : null}
             reviewing={review.isPending}
             onMarkSeen={(url) => {
               void window.revva.github.markSeen(url)
@@ -304,25 +324,20 @@ export function GitHubView({
             }}
             onMerge={(method, url) => merge.mutate({ prUrl: url, method })}
             onRebase={(url) => rebase.mutate(url)}
-            onSolve={(url) => {
-              setActionError(null)
-              solveConflicts.mutate(url)
-            }}
-            onAnswerComments={(url) => {
-              setActionError(null)
-              solveComments.mutate(url)
-            }}
-            onReview={(url) => {
-              setBusyUrl(url)
-              void window.revva.github.markSeen(url)
-              review.mutate(url, { onSettled: () => setBusyUrl(null) })
-            }}
+            onSolve={needsCheckout('to check the PR out for conflict resolution', (url, sel) =>
+              solveConflicts.mutate({ prUrl: url, sel })
+            )}
+            onAnswerComments={needsCheckout('to check the PR out and answer its review threads', (url, sel) =>
+              solveComments.mutate({ prUrl: url, sel })
+            )}
+            onReview={startReview}
             onOpenChat={onOpenChat}
             onChat={startChat}
             jump={jump}
           />
         )}
       </div>
+      {setup.dialog}
     </div>
   )
 }

@@ -47,6 +47,7 @@ import {
 import { agentAttachments, fileAttachments, skillAttachments } from '../opencode/prompt-refs'
 import { coordinator } from '../opencode/coordinator'
 import { skillGuardRules } from '../opencode/skill-guard'
+import { runSetupCommand } from '../worktree-setup'
 
 const exec = execTool
 
@@ -68,6 +69,8 @@ interface WorkRow {
   blocker: string | null
   pr_url: string | null
   seen_at: number | null
+  /** The original start request, kept so a build parked by a failed setup can resume. */
+  start_input: string | null
   created_at: number
   updated_at: number
   review_after_followup: number
@@ -297,9 +300,11 @@ class WorkManager {
         : commitMessage.trim()
       // Plain staging + commit on the branch that is already checked out; git's own
       // hooks and refusal are the last word, and neither can discard anything.
+      // `--no-gpg-sign` is explicit: Revva never signs commits, and a user's
+      // commit.gpgsign would otherwise make this commit signed behind their back.
       await exec('git', ['-C', work.worktreeDir, 'add', '-A'])
       try {
-        await exec('git', ['-C', work.worktreeDir, 'commit', '-m', message])
+        await exec('git', ['-C', work.worktreeDir, 'commit', '--no-gpg-sign', '-m', message])
       } catch (err) {
         const detail = describeError(err)
         throw new Error(`Nothing was reviewed: the commit failed — ${detail}`)
@@ -634,16 +639,30 @@ class WorkManager {
     this.emit(work.id, 'ABANDONED')
   }
 
-  /** Ticket tagging is a property update, not a new pipeline/run. */
-  async setTicketProperty(sessionId: string, ticketKey: string | null): Promise<void> {
+  /**
+   * Detach the ticket property from a run without touching its files, branch or
+   * transcript. The pipeline row survives when it still carries a PR link (that
+   * record is real work); with neither a ticket nor a PR left, the row retires.
+   */
+  async detachTicket(sessionId: string): Promise<void> {
     const work = this.workBySession(sessionId)
     if (!work || work.state === 'ABANDONED') return
     const chat = getDb().prepare('SELECT pr_url FROM chat WHERE session_id = ?').get(sessionId) as { pr_url: string | null } | undefined
-    if (!ticketKey && !chat?.pr_url) {
+    // The pipeline row holds the PR link even when the chat index row is gone.
+    if (!chat?.pr_url && !work.pr_url) {
       await this.forgetConversation(sessionId)
       return
     }
-    getDb().prepare('UPDATE work SET ticket_key = ? WHERE id = ?').run(ticketKey ?? '', work.id)
+    getDb().prepare('UPDATE work SET ticket_key = ? WHERE id = ?').run('', work.id)
+    this.emit(work.id, work.state as WorkState)
+  }
+
+  /** Ticket tagging is a property update, not a new pipeline/run. */
+  async setTicketProperty(sessionId: string, ticketKey: string | null): Promise<void> {
+    if (!ticketKey) return this.detachTicket(sessionId)
+    const work = this.workBySession(sessionId)
+    if (!work || work.state === 'ABANDONED') return
+    getDb().prepare('UPDATE work SET ticket_key = ? WHERE id = ?').run(ticketKey, work.id)
     this.emit(work.id, work.state as WorkState)
   }
 
@@ -689,8 +708,8 @@ class WorkManager {
     const now = Date.now()
     getDb()
       .prepare(
-        `INSERT INTO work(id, ticket_key, workspace_id, repo_dir, branch, worktree_dir, parent_work_id, mode, state, session_id, review_sel, ship_on_approve, created_at, updated_at)
-         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+        `INSERT INTO work(id, ticket_key, workspace_id, repo_dir, branch, worktree_dir, parent_work_id, mode, state, session_id, review_sel, ship_on_approve, created_at, updated_at, start_input)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       )
       .run(
         id,
@@ -706,40 +725,132 @@ class WorkManager {
         input.reviewSel ? JSON.stringify(input.reviewSel) : null,
         input.mode === 'auto' || input.shipOnApprove ? 1 : 0,
         now,
-        now
+        now,
+        JSON.stringify(input)
       )
 
     try {
-      // Build session in the worktree.
-      const api = openCodeService.api
-      const guard = await skillGuardRules(worktreeDir)
-      const session = await api.session.create({
-        title: `${ticket.key}: ${ticket.summary}`.slice(0, 100),
-        agent: input.agentID ?? null,
-        model: input.model ? { providerID: input.model.providerID, id: input.model.id, ...(input.model.variant ? { variant: input.model.variant } : {}) } : null,
-        location: { directory: worktreeDir },
-        ...(guard.length ? { permissions: guard } : {}),
-        metadata: { revva: { kind: 'chat', workId: id, ticketKey: ticket.key, phase: 'build', mode: input.mode } }
-      })
-      getDb().prepare('UPDATE work SET session_id = ? WHERE id = ?').run(session.id, id)
-      // A started ticket is also an ordinary conversation with ticket properties.
-      getDb().prepare(`INSERT INTO chat(session_id, title, directory, agent_id, provider_id, model_id, ticket_key, created_at, updated_at, seen_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?)`)
-        .run(session.id, `${ticket.key}: ${ticket.summary}`, worktreeDir, input.agentID ?? null, input.model?.providerID ?? null, input.model?.id ?? null, ticket.key, now, now, now)
-      sessionIndex.register(session.id, 'work')
-      await coordinator.prepare(session.id).catch((error) => console.warn('[work] coordinator setup failed:', describeError(error)))
-
-      const prompt = await this.buildPrompt(ticket.key, input)
-      await api.session.prompt({ sessionID: session.id, text: prompt }).catch((err) => {
-        throw new Error(`Session created but first prompt failed: ${describeError(err)}`)
-      })
-
-      this.emit(id, state)
-      return this.toSummary(getDb().prepare('SELECT * FROM work WHERE id = ?').get(id) as WorkRow)
+      // Provision the worktree's own environment before any agent sees it. A bare
+      // worktree has no venv/node_modules, and the main checkout's environment must
+      // never be reused (its editable installs resolve back to the main tree, so
+      // verification would silently exercise the wrong code).
+      if (!(await this.provision(id, worktreeDir, input.repoDir))) {
+        // Parked with the command's own words; retry from the work card.
+        return this.toSummary(getDb().prepare('SELECT * FROM work WHERE id = ?').get(id) as WorkRow)
+      }
+      return await this.launchBuild(id, ticket.key, ticket.summary, worktreeDir, input)
     } catch (error) {
       this.setState(id, 'WAITING_HUMAN', `Build setup or first prompt failed: ${describeError(error)}. Inspect the conversation and worktree before retrying; the prompt may have been delivered.`)
       throw new Error(`Build could not be started. The worktree and work record were kept for inspection: ${describeError(error)}`)
     }
+  }
+
+  /**
+   * Create the build session, link it as a conversation, and deliver the brief.
+   * Split from `start` so a setup retry resumes exactly here instead of creating a
+   * second worktree or a duplicate work row.
+   */
+  private async launchBuild(
+    id: string,
+    ticketKey: string,
+    summary: string,
+    worktreeDir: string,
+    input: StartWorkInput
+  ): Promise<WorkSummary> {
+    const now = Date.now()
+    // Build session in the worktree.
+    const api = openCodeService.api
+    const guard = await skillGuardRules(worktreeDir)
+    const session = await api.session.create({
+      title: `${ticketKey}: ${summary}`.slice(0, 100),
+      agent: input.agentID ?? null,
+      model: input.model ? { providerID: input.model.providerID, id: input.model.id, ...(input.model.variant ? { variant: input.model.variant } : {}) } : null,
+      location: { directory: worktreeDir },
+      ...(guard.length ? { permissions: guard } : {}),
+      metadata: { revva: { kind: 'chat', workId: id, ticketKey, phase: 'build', mode: input.mode } }
+    })
+    getDb().prepare('UPDATE work SET session_id = ? WHERE id = ?').run(session.id, id)
+    // A started ticket is also an ordinary conversation with ticket properties.
+    getDb().prepare(`INSERT INTO chat(session_id, title, directory, agent_id, provider_id, model_id, ticket_key, created_at, updated_at, seen_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?)`)
+      .run(session.id, `${ticketKey}: ${summary}`, worktreeDir, input.agentID ?? null, input.model?.providerID ?? null, input.model?.id ?? null, ticketKey, now, now, now)
+    sessionIndex.register(session.id, 'work')
+    await coordinator.prepare(session.id).catch((error) => console.warn('[work] coordinator setup failed:', describeError(error)))
+
+    const prompt = await this.buildPrompt(ticketKey, input)
+    await api.session.prompt({ sessionID: session.id, text: prompt }).catch((err) => {
+      throw new Error(`Session created but first prompt failed: ${describeError(err)}`)
+    })
+
+    this.emit(id, 'BUILDING')
+    return this.toSummary(getDb().prepare('SELECT * FROM work WHERE id = ?').get(id) as WorkRow)
+  }
+
+  /** The workspace that owns `repoDir`, most specific path first (a repo inside a workspace folder). */
+  private workspaceFor(repoDir: string): { id: string; setup_command: string | null } | undefined {
+    return getDb()
+      .prepare(
+        `SELECT id, setup_command FROM workspace
+          WHERE ? = path OR ? LIKE path || '/%' OR ? LIKE path || '\\%'
+          ORDER BY length(path) DESC LIMIT 1`
+      )
+      .get(repoDir, repoDir, repoDir) as { id: string; setup_command: string | null } | undefined
+  }
+
+  /**
+   * Run the workspace's environment-setup command in a fresh worktree, before any
+   * agent sees it. Returns false when setup failed and the work was parked with the
+   * command's own words, so the caller must not start a build. Nothing has been
+   * prompted yet, so a retry is clean.
+   */
+  private async provision(workId: string, worktreeDir: string, repoDir: string): Promise<boolean> {
+    const ws = this.workspaceFor(repoDir)
+    const command = ws?.setup_command?.trim()
+    if (!ws || !command) return true
+    const result = await runSetupCommand(command, worktreeDir)
+    getDb().prepare('UPDATE workspace SET setup_command_last = ? WHERE id = ?').run(command, ws.id)
+    if (result.ok) return true
+    this.setState(
+      workId,
+      'WAITING_HUMAN',
+      `Environment setup failed in the new worktree, so no build was started: \`${command}\`\n${result.output || '(the command produced no output)'}`
+    )
+    return false
+  }
+
+  /**
+   * Retry the environment setup for a parked work and, on success, open the build
+   * session that the failure prevented. Safe to run only while no session exists
+   * (nothing was prompted), which is exactly the state a setup failure leaves.
+   */
+  async retrySetup(workId: string): Promise<string> {
+    const work = getDb().prepare('SELECT * FROM work WHERE id = ?').get(workId) as WorkRow | undefined
+    if (!work) throw new Error('Work not found.')
+    if (work.session_id) throw new Error('This work already has a conversation; the environment step is not what is blocking it.')
+    if (!existsSync(work.worktree_dir)) throw new Error(`The worktree is gone: ${work.worktree_dir}`)
+    const ws = this.workspaceFor(work.repo_dir)
+    const command = ws?.setup_command?.trim()
+    if (!command) throw new Error('No environment setup command is configured for this workspace. Add one in Setup → Projects.')
+    const result = await runSetupCommand(command, work.worktree_dir)
+    getDb().prepare('UPDATE workspace SET setup_command_last = ? WHERE id = ?').run(command, ws!.id)
+    if (!result.ok) {
+      this.setState(
+        workId,
+        'WAITING_HUMAN',
+        `Environment setup failed again: \`${command}\`\n${result.output || '(the command produced no output)'}`
+      )
+      throw new Error(`Environment setup failed again: ${result.output || 'the command produced no output'}`)
+    }
+    const startInput = work.start_input ? (JSON.parse(work.start_input) as StartWorkInput) : undefined
+    if (!startInput) {
+      // Older work rows predate start_input: the environment is ready, but the
+      // original brief is not recoverable, so hand it back to the user.
+      this.setState(workId, 'READY', undefined)
+      return result.output
+    }
+    const ticket = await getTicket(work.ticket_key)
+    await this.launchBuild(workId, work.ticket_key, ticket?.summary ?? work.ticket_key, work.worktree_dir, startInput)
+    return result.output
   }
 
   private async buildPrompt(ticketKey: string, input: StartWorkInput): Promise<string> {
@@ -781,6 +892,11 @@ class WorkManager {
       // Structural pipeline facts — not stylistic, always appended.
       PIPELINE_CONTEXT_HEADER,
       '- You are in a dedicated git worktree on branch ' + (input.resumeBranch ?? slugBranch(ticketKey)) + '.',
+      ...(this.workspaceFor(input.repoDir)?.setup_command
+        ? [
+            `- This worktree has its own environment, just provisioned by \`${this.workspaceFor(input.repoDir)!.setup_command}\` in this folder. Run tests and checks here. Never reach for another checkout's environment (a sibling .venv, node_modules, or absolute paths into the original repo): its editable installs resolve back to that tree, so the run would silently exercise another branch's code.`
+          ]
+        : []),
       '- Commit your work with clear messages referencing ' + ticketKey + '. Do not push, do not open PRs — Revva ships after review.',
       BUILD_COMPLETION_INSTRUCTIONS,
       ...modeLines

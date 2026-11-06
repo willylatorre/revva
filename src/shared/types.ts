@@ -74,7 +74,15 @@ export type SkillInfo = z.infer<typeof skillInfoSchema>
 export const workspaceSchema = z.object({
   id: z.string(),
   path: z.string(),
-  defaultBaseBranch: z.string().optional()
+  defaultBaseBranch: z.string().optional(),
+  /**
+   * Opaque shell command that gives a fresh ticket worktree its own environment
+   * (`uv sync`, `pnpm install`, `poetry install`…). Run verbatim in the worktree;
+   * Revva never inspects or interprets it.
+   */
+  setupCommand: z.string().optional(),
+  /** The command as last run, so a failed setup can be retried from the card. */
+  setupCommandLast: z.string().optional()
 })
 export type Workspace = z.infer<typeof workspaceSchema>
 
@@ -115,6 +123,7 @@ export const settingsKeySchema = z.enum([
   'prompt.tackle',
   'prompt.review',
   'prompt.description',
+  'prSession.selection',
   'watchdog.staleSecs',
   'cards.pinnedOrder',
   'keepAwake.enabled',
@@ -660,7 +669,9 @@ export const jiraCommentSchema = z.object({
   author: z.string(),
   body: z.string(),
   createdAt: z.number(),
-  tackledAt: z.number().optional()
+  tackledAt: z.number().optional(),
+  /** The ticket on Jira, for replying there instead of reworking. */
+  url: z.string().optional()
 })
 export type JiraComment = z.infer<typeof jiraCommentSchema>
 
@@ -1034,6 +1045,10 @@ export interface RevvaApi {
     add(path: string): Promise<Workspace>
     remove(id: string): Promise<void>
     pickFolder(): Promise<string | null>
+    /** Save (or clear) the env-setup command a workspace's new worktrees run. */
+    setSetupCommand(id: string, command: string | null): Promise<void>
+    /** Run the workspace's setup command in a worktree now (retry after a failure). */
+    runSetupCommand(workId: string): Promise<string>
   }
   shell: {
     /** Open an http(s) URL in the user's default browser. */
@@ -1155,21 +1170,25 @@ export interface RevvaApi {
     pending(): Promise<JiraComment[]>
     /** Rework session that addresses the alerts, updates the PR, replies on Jira. */
     tackle(workId: string): Promise<void>
+    /** Mark this work's pending comments handled without touching the branch. */
+    dismiss(workId: string): Promise<void>
+    /** Post a plain Jira reply and clear the alert (no rework, no push). */
+    reply(workId: string, body: string): Promise<void>
   }
   github: {
     /** Open PRs authored by / reviewing for the gh user. Served from the poller's
      *  hot snapshot when fresh; `force` (manual refresh) always re-runs the gh path. */
     list(scope?: 'mine' | 'review', force?: boolean): Promise<PullRequest[]>
     /** Spin up a PR-review agent session (worktree checked out in the background). */
-    review(prUrl: string): Promise<TaskSessionResult>
+    review(prUrl: string, sel?: RoleSel): Promise<TaskSessionResult>
     /** Current setup phase for a PR-review chat, or null after setup completes. */
     reviewSetup(sessionId: string): Promise<ReviewSetupStatus | null>
     /** New chat linked to the PR (+ its ticket), checked out at the PR's branch; opens directly. */
     chat(prUrl: string): Promise<TaskSessionResult>
     /** Start a writable chat in an isolated worktree to resolve PR conflicts. */
-    solveConflicts(prUrl: string): Promise<TaskSessionResult>
+    solveConflicts(prUrl: string, sel?: RoleSel): Promise<TaskSessionResult>
     /** Chat on the PR's branch that fixes, answers and resolves unresolved review threads. */
-    solveComments(prUrl: string): Promise<TaskSessionResult>
+    solveComments(prUrl: string, sel?: RoleSel): Promise<TaskSessionResult>
     /** Clear the "new comment/conflict/approval" flags for a PR. */
     markSeen(prUrl: string): Promise<void>
     /** New comments/conflicts/approvals across both scopes (poller-maintained). */

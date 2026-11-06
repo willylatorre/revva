@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
-import { FolderPlus, Trash2, CircleCheck, CircleX, CircleDashed, Star, Plug, FolderKanban, Bot, ScrollText } from 'lucide-react'
+import { FolderPlus, Trash2, CircleCheck, CircleX, CircleDashed, Star, Plug, FolderKanban, Bot, ScrollText, ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -22,7 +22,7 @@ import {
   DEFAULT_PR_DESCRIPTION_PROMPT,
   PROMPT_PLACEHOLDER_HELP
 } from '@shared/prompts'
-import type { PipelineRole, SettingsKey, ToolchainChoice } from '@shared/types'
+import type { PipelineRole, SettingsKey, ToolchainChoice, Workspace } from '@shared/types'
 
 /**
  * First-run setup + settings (REQ-SETUP-1/2): OpenCode connection status, workspace folders,
@@ -144,17 +144,7 @@ export function SetupView(): React.JSX.Element {
             </p>
             <div className="space-y-1.5">
               {workspaces.data?.map((w) => (
-                <div key={w.id} className="flex items-center justify-between rounded-md border px-3 py-1.5 text-sm">
-                  <span className="truncate font-mono text-xs">{w.path}</span>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="size-6"
-                    onClick={() => void window.revva.workspace.remove(w.id).then(() => workspaces.refetch())}
-                  >
-                    <Trash2 className="size-3.5" />
-                  </Button>
-                </div>
+                <WorkspaceRow key={w.id} workspace={w} onRemoved={() => void workspaces.refetch()} />
               ))}
             </div>
             <div className="pt-2">
@@ -239,6 +229,90 @@ export function SetupView(): React.JSX.Element {
           <p>Everything here is read live from your machine — nothing is imported or copied.</p>
         </section>
       </div>
+    </div>
+  )
+}
+
+/**
+ * One saved workspace. The setup command is the only per-repo env knowledge Revva
+ * holds: a fresh ticket worktree has no venv/node_modules, and the main checkout's
+ * environment must not be reused (its editable installs resolve to the main tree,
+ * so tests would silently run against the wrong code).
+ */
+function WorkspaceRow({ workspace, onRemoved }: {
+  workspace: Workspace
+  onRemoved: () => void
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const [draft, setDraft] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const value = draft ?? workspace.setupCommand ?? ''
+  const dirty = draft !== null && draft.trim() !== (workspace.setupCommand ?? '')
+  const save = (): void => {
+    setSaving(true)
+    void window.revva.workspace
+      .setSetupCommand(workspace.id, draft?.trim() || null)
+      .then(() => {
+        setDraft(null)
+        onRemoved()
+      })
+      .finally(() => setSaving(false))
+  }
+  return (
+    <div className="rounded-md border text-sm">
+      <div className="flex items-center justify-between px-3 py-1.5">
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+        >
+          <ChevronRight className={cn('size-3.5 shrink-0 text-muted-foreground transition-transform', open && 'rotate-90')} />
+          <span className="truncate font-mono text-xs">{workspace.path}</span>
+          {workspace.setupCommand && !open && (
+            <Badge variant="secondary" className="shrink-0 text-[10px]">env setup</Badge>
+          )}
+        </button>
+        <Button
+          size="icon"
+          variant="ghost"
+          className="size-6 shrink-0"
+          aria-label={`Remove ${workspace.path}`}
+          onClick={() => void window.revva.workspace.remove(workspace.id).then(onRemoved)}
+        >
+          <Trash2 className="size-3.5" />
+        </Button>
+      </div>
+      {open && (
+        <div className="space-y-1.5 border-t px-3 py-2">
+          <Label className="text-xs">Environment setup command</Label>
+          <div className="flex gap-2">
+            <Input
+              placeholder="uv sync"
+              value={value}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && dirty && save()}
+              className="font-mono text-xs"
+            />
+            {dirty && (
+              <Button size="sm" variant="outline" disabled={saving} onClick={save}>
+                {saving ? 'Saving…' : 'Save'}
+              </Button>
+            )}
+          </div>
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            Runs in each new ticket worktree before the agent starts — <code>uv sync</code>,{' '}
+            <code>pnpm install</code>, <code>poetry install</code>. Run through your shell, so aliases work.
+            Revva never reuses your main checkout's environment: its editable installs resolve back to the main
+            tree, so tests would silently run against the wrong code. Empty = the worktree is left bare.
+          </p>
+          {workspace.setupCommandLast && workspace.setupCommandLast !== workspace.setupCommand && (
+            <p className="text-[11px] text-muted-foreground">
+              Last run: <code>{workspace.setupCommandLast}</code>
+            </p>
+          )}
+        </div>
+      )}
     </div>
   )
 }

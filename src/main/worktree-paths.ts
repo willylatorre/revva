@@ -18,9 +18,15 @@
  * ripgrep all do), which is why these repos gitignore `.claude/worktrees/`.
  */
 import { mkdirSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { homedir } from 'node:os'
+import { basename, isAbsolute, join } from 'node:path'
 import { settingGet } from './db'
 
+/**
+ * The setting is typed by hand, so `~` and a trailing slash are accepted: the error
+ * message below suggests `~/revva`, and a `~` that stayed literal would resolve to a
+ * folder named `~` inside the app's working directory instead of the home folder.
+ */
 function root(): string {
   const value = settingGet<string>('worktreeRoot')
   if (typeof value !== 'string' || !value.trim()) {
@@ -28,7 +34,13 @@ function root(): string {
       'Set the worktree root in Setup first (for example ~/revva). Revva keeps review clones and per-task worktrees under it.'
     )
   }
-  return value.trim()
+  const expanded = value.trim().replace(/^~(?=$|[\\/])/, homedir())
+  if (!isAbsolute(expanded)) {
+    throw new Error(
+      `The worktree root must be an absolute path (got "${value.trim()}"). Set it in Setup → Projects, for example ~/revva.`
+    )
+  }
+  return expanded.replace(/[\\/]+$/, '') || expanded
 }
 
 /** Root holding every review clone, `<root>/repos`. Not created here. */

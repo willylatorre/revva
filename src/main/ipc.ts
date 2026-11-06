@@ -51,6 +51,7 @@ import {
   scriptInputSchema,
   roleConfigSchema,
   taskSessionInputSchema,
+  roleSelSchema,
   promptImageSchema,
   promptRefsSchema,
   worktreeRemoveInputSchema,
@@ -60,13 +61,19 @@ import {
   startChatReviewInputSchema,
   workAbandonInputSchema,
   type PromptImage,
-  type PromptRefs
+  type PromptRefs,
+  type RoleSel
 } from '@shared/types'
 
 /** Validate the image array arriving from the renderer (untrusted). */
 function promptImageList(images: unknown): PromptImage[] {
   if (!Array.isArray(images)) return []
   return images.map((img) => promptImageSchema.parse(img))
+}
+
+/** Per-run agent/model pick (untrusted); absent → the role's configured default. */
+function optionalRoleSel(sel: unknown): RoleSel | undefined {
+  return sel === undefined || sel === null ? undefined : roleSelSchema.parse(sel)
 }
 
 /** Validate composer skill/file refs (untrusted); absent or invalid → none. */
@@ -186,8 +193,16 @@ export function registerIpc(): void {
       id: string
       path: string
       default_base_branch: string | null
+      setup_command: string | null
+      setup_command_last: string | null
     }>
-    return rows.map((r) => ({ id: r.id, path: r.path, defaultBaseBranch: r.default_base_branch ?? undefined }) satisfies Workspace)
+    return rows.map((r) => ({
+      id: r.id,
+      path: r.path,
+      defaultBaseBranch: r.default_base_branch ?? undefined,
+      setupCommand: r.setup_command ?? undefined,
+      setupCommandLast: r.setup_command_last ?? undefined
+    }) satisfies Workspace)
   })
   ipcMain.handle(IPC.workspaceRepositories, async (_e, id: unknown) => {
     if (typeof id !== 'string') throw new Error('Invalid workspace.')
@@ -211,12 +226,26 @@ export function registerIpc(): void {
       id: string
       path: string
       default_base_branch: string | null
+      setup_command: string | null
+      setup_command_last: string | null
     }
-    return { id: row.id, path: row.path, defaultBaseBranch: row.default_base_branch ?? undefined } satisfies Workspace
+    return {
+      id: row.id,
+      path: row.path,
+      defaultBaseBranch: row.default_base_branch ?? undefined,
+      setupCommand: row.setup_command ?? undefined,
+      setupCommandLast: row.setup_command_last ?? undefined
+    } satisfies Workspace
   })
   ipcMain.handle(IPC.workspaceRemove, (_e, id: string) => {
     getDb().prepare('DELETE FROM workspace WHERE id = ?').run(id)
   })
+  ipcMain.handle(IPC.workspaceSetSetupCommand, (_e, id: string, command: unknown) => {
+    const value = command === null || command === undefined ? null : z.string().max(4000).parse(command).trim() || null
+    const res = getDb().prepare('UPDATE workspace SET setup_command = ? WHERE id = ?').run(value, String(id))
+    if (res.changes === 0) throw new Error('Workspace not found.')
+  })
+  ipcMain.handle(IPC.workspaceRunSetupCommand, (_e, workId: unknown) => workManager.retrySetup(id(workId)))
   ipcMain.handle(IPC.dialogPickFolder, async (e) => {
     const win = BrowserWindow.fromWebContents(e.sender)
     const res = await dialog.showOpenDialog(win ?? BrowserWindow.getAllWindows()[0]!, {
@@ -474,15 +503,17 @@ export function registerIpc(): void {
   /* ---------- comment watcher (M6) ---------- */
   ipcMain.handle(IPC.commentsPending, () => commentWatcher.pending())
   ipcMain.handle(IPC.commentsTackle, (_e, workId: string) => commentWatcher.tackleComments(String(workId)))
+  ipcMain.handle(IPC.commentsDismiss, (_e, workId: string) => commentWatcher.dismiss(String(workId)))
+  ipcMain.handle(IPC.commentsReply, (_e, workId: string, body: unknown) => commentWatcher.reply(String(workId), String(body ?? '')))
 
   /* ---------- github + task sessions + favorites ---------- */
   ipcMain.handle(IPC.githubList, (_e, scope?: unknown, force?: unknown) =>
     githubManager.list(scope === 'review' ? 'review' : 'mine', force === true)
   )
-  ipcMain.handle(IPC.githubReview, (_e, ref: string) => {
+  ipcMain.handle(IPC.githubReview, (_e, ref: string, sel?: unknown) => {
     const parsed = parsePrRef(String(ref))
     if (!parsed?.url) throw new Error('Pass a full PR URL or owner/repo#123 (bare numbers are ambiguous across projects).')
-    return githubManager.startReview(parsed.url)
+    return githubManager.startReview(parsed.url, optionalRoleSel(sel))
   })
   ipcMain.handle(IPC.githubReviewSetup, (_e, sessionId: unknown) => githubManager.reviewSetup(id(sessionId)))
   ipcMain.handle(IPC.githubChat, (_e, ref: string) => {
@@ -490,15 +521,15 @@ export function registerIpc(): void {
     if (!parsed?.url) throw new Error('Pass a full PR URL.')
     return githubManager.startChat(parsed.url)
   })
-  ipcMain.handle(IPC.githubSolveConflicts, (_e, ref: string) => {
+  ipcMain.handle(IPC.githubSolveConflicts, (_e, ref: string, sel?: unknown) => {
     const parsed = parsePrRef(String(ref))
     if (!parsed?.url) throw new Error('Pass a full PR URL.')
-    return githubManager.solveConflicts(parsed.url)
+    return githubManager.solveConflicts(parsed.url, optionalRoleSel(sel))
   })
-  ipcMain.handle(IPC.githubSolveComments, (_e, ref: unknown) => {
+  ipcMain.handle(IPC.githubSolveComments, (_e, ref: unknown, sel?: unknown) => {
     const parsed = parsePrRef(String(ref))
     if (!parsed?.url) throw new Error('Pass a full PR URL.')
-    return githubManager.solveComments(parsed.url)
+    return githubManager.solveComments(parsed.url, optionalRoleSel(sel))
   })
   ipcMain.handle(IPC.githubSeen, (_e, prUrl: string) => githubManager.markSeen(String(prUrl)))
   ipcMain.handle(IPC.githubAlerts, () => githubManager.alerts())

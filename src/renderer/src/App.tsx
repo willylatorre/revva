@@ -319,7 +319,9 @@ export default function App(): React.JSX.Element {
     const work = works.data?.find((w) => w.id === workId)
     if (work?.ownsWorktree === false && work.sessionId) {
       unlinkFromTicket(work.sessionId)
-      setView({ kind: 'chat', sessionId: work.sessionId })
+      // A row can outlive its conversation (the session was deleted elsewhere).
+      // Opening that dead session would only show a failing transcript.
+      if (chats.data?.some((c) => c.sessionId === work.sessionId)) setView({ kind: 'chat', sessionId: work.sessionId })
       return
     }
     // Preview first (read-only): the dialog shows exactly what removal destroys

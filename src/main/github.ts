@@ -16,10 +16,10 @@ import { chatManager } from './opencode/chats'
 import { getDb, roleConfigGet, settingGet, settingSet } from './db'
 import { workManager } from './pipeline/works'
 import { reviewClonesDir, reviewClonesPath, reviewRoot, worktreesDirFor } from './worktree-paths'
-import { renderPrompt, DEFAULT_PR_REVIEW_PROMPT } from '@shared/prompts'
+import { renderPrompt, DEFAULT_PR_REVIEW_PROMPT, COMMIT_IDENTITY_GUARD } from '@shared/prompts'
 import { parsePrRef, repoFromGitRemote } from '@shared/pr-ref'
 import { ticketKeyFromText } from '@shared/ticket-key'
-import { IPC, type PrAlert, type PrMergeMethod, type PrDetail, type PrStack, type PullRequest, type ReviewSetupStatus, type TaskSessionResult } from '@shared/types'
+import { IPC, type PrAlert, type PrMergeMethod, type PrDetail, type PrStack, type PullRequest, type ReviewSetupStatus, type RoleSel, type TaskSessionResult } from '@shared/types'
 import { pushToWindows } from './push'
 
 const exec = execTool
@@ -549,7 +549,7 @@ class GitHubManager {
   }
 
   /** Start from the current PR head in a new worktree; never modify another checkout. */
-  async solveConflicts(prUrl: string): Promise<TaskSessionResult> {
+  async solveConflicts(prUrl: string, sel?: RoleSel): Promise<TaskSessionResult> {
     const pr = await this.detail(prUrl)
     if (pr.state.toLowerCase() !== 'open') throw new Error('Only open PRs can have conflicts resolved.')
     const [owner, name] = pr.repo.split('/')
@@ -576,6 +576,8 @@ class GitHubManager {
     const chat = await chatManager.create({
       directory: worktreeDir,
       title: `${pr.repo}#${pr.number} conflicts`.slice(0, 80),
+      agentID: sel?.agentID,
+      model: sel?.model,
       ticketKey: this.ticketForPr(pr),
       prUrl: pr.url
     }).catch((err) => {
@@ -585,7 +587,8 @@ class GitHubManager {
       `Resolve the merge conflicts for PR ${pr.url} (${pr.repo}#${pr.number}: ${pr.title}).`,
       `This isolated worktree starts at the fetched PR head (${pr.headRefName}) on local branch ${branch}. The PR base is ${pr.baseRefName} in ${pr.repo}.`,
       'Inspect the changes and the repository instructions. Fetch the current base branch from origin and merge it into this worktree; resolve conflicts carefully, preserving the intent of both sides. Run the relevant checks and report the result and any uncertainty.',
-      'Do not alter other worktrees, rewrite existing history, force-push, push, merge the PR on GitHub, or discard unrelated changes. Leave the resolution committed locally and explain how to update the PR; ask the user before any push.'
+      'Do not alter other worktrees, rewrite existing history, force-push, push, merge the PR on GitHub, or discard unrelated changes. Leave the resolution committed locally and explain how to update the PR; ask the user before any push.',
+      COMMIT_IDENTITY_GUARD
     ].join('\n\n')
     await openCodeService.api.session.prompt({ sessionID: chat.sessionId, text }).catch((err) => {
       throw new Error(`Chat created at ${worktreeDir}, but the prompt failed: ${describeError(err)}`)
@@ -599,7 +602,7 @@ class GitHubManager {
    * each thread and resolve it. Prefers the ticket's own worktree so the fixes
    * land on the real branch; otherwise a fresh branch worktree at the PR head.
    */
-  async solveComments(prUrl: string): Promise<TaskSessionResult> {
+  async solveComments(prUrl: string, sel?: RoleSel): Promise<TaskSessionResult> {
     const pr = await this.detail(prUrl)
     if (pr.state.toLowerCase() !== 'open') throw new Error('Only open PRs have review threads to answer.')
     const [owner, name] = pr.repo.split('/')
@@ -634,6 +637,8 @@ class GitHubManager {
     const chat = await chatManager.create({
       directory,
       title: `${pr.repo}#${pr.number} review comments`.slice(0, 80),
+      agentID: sel?.agentID,
+      model: sel?.model,
       ticketKey,
       prUrl: pr.url
     }).catch((err) => {
@@ -648,7 +653,8 @@ class GitHubManager {
         ? '3. Commit the fixes on this branch, then push them to the PR: `git push origin ' + `HEAD:refs/heads/${pr.headRefName}` + '`. Plain push only — never force.'
         : '3. Commit the fixes on this branch and push them to the PR head (`git push origin HEAD`). If the checkout carries unrelated uncommitted changes, do not touch or commit them.',
       `4. For every thread, reply under its first comment — \`gh api repos/${owner}/${name}/pulls/${pr.number}/comments -f body="<reply>" -F in_reply_to=<comment databaseId>\` — stating what you changed (with file:line) or why the comment does not apply. Then resolve it — \`gh api graphql -f query='mutation { resolveReviewThread(input: { threadId: "<thread node id>" }) { thread { isResolved } } }'\`.`,
-      'Never force-push, never merge the PR, never touch other worktrees. Finish with a one-line-per-thread summary: fixed or answered.'
+      'Never force-push, never merge the PR, never touch other worktrees. Finish with a one-line-per-thread summary: fixed or answered.',
+      COMMIT_IDENTITY_GUARD
     ].join('\n\n')
     await openCodeService.api.session.prompt({ sessionID: chat.sessionId, text }).catch((err) => {
       throw new Error(`Chat created at ${directory}, but the prompt failed: ${describeError(err)}`)
@@ -904,7 +910,7 @@ class GitHubManager {
    * Create the review chat first. Prepare the repository and detached PR worktree
    * in the background, then move the chat and start the review prompt.
    */
-  async startReview(prUrl: string): Promise<TaskSessionResult> {
+  async startReview(prUrl: string, sel?: RoleSel): Promise<TaskSessionResult> {
     const ref = parsePrRef(prUrl)
     if (!ref?.repo || !ref.url) throw new Error('Could not determine the PR repository and number.')
     const pending = getDb().prepare(`SELECT session_id FROM github_review_setup WHERE pr_url = ? AND state = 'preparing' ORDER BY updated_at DESC LIMIT 1`).get(ref.url) as { session_id: string } | undefined
@@ -915,12 +921,14 @@ class GitHubManager {
     const [owner] = ref.repo.split('/')
     if (!owner) throw new Error('Could not determine the PR repository owner.')
     const reposDir = reviewClonesDir(owner)
-    const sel = roleConfigGet('prReview')
+    // A per-run pick wins over the role default; the pick itself is remembered by
+    // the renderer, so Setup's role default is never rewritten behind the user.
+    const configured = roleConfigGet('prReview')
     const chat = await chatManager.create({
       directory: reposDir,
       title: `${ref.repo}#${ref.number} review`.slice(0, 80),
-      agentID: sel?.agentID,
-      model: sel?.model,
+      agentID: sel?.agentID ?? configured?.agentID,
+      model: sel?.model ?? configured?.model,
       prUrl: ref.url
     })
     this.setReviewSetup(chat.sessionId, ref.url, 'preparing', 'Preparing the PR review…')
